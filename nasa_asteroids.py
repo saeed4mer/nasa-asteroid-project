@@ -37,9 +37,18 @@ def extract_asteroids(data):
     for date, asteroid_list in asteroids.items():
 
         for asteroid in asteroid_list:
-
+            if not asteroid.get("name"):
+                continue
+            if not asteroid.get("close_approach_data"):
+                continue
+            
             approach = asteroid["close_approach_data"][0]
 
+            if not approach.get("miss_distance"):
+                continue
+            if not approach["miss_distance"].get("kilometers"):
+                continue
+            
             asteroid_record = {
                 "name": asteroid["name"],
                 "closest_approach_date": approach["close_approach_date"],
