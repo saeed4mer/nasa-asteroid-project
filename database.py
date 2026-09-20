@@ -1,13 +1,11 @@
 import sqlite3
-import csv
 
-conn = sqlite3.connect("asteroids.db")
-cursor = conn.cursor()
 
-with open("asteroids.csv", "r", encoding="utf-8") as file:
-    reader = csv.DictReader(file)
+def load_data(asteroid_data):
+    conn = sqlite3.connect("asteroids.db")
+    cursor = conn.cursor()
 
-    for row in reader:
+    for row in asteroid_data:
 
         cursor.execute(
             """
@@ -49,7 +47,5 @@ with open("asteroids.csv", "r", encoding="utf-8") as file:
             )
         )
 
-conn.commit()
-conn.close()
-
-print("Data loaded successfully.")
+    conn.commit()
+    conn.close()
