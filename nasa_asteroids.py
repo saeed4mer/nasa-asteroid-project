@@ -2,6 +2,9 @@ import requests
 import csv
 import os
 import logging
+import json 
+import boto3
+
 from database import load_data
 from datetime import date, timedelta
 from dotenv import load_dotenv
@@ -11,6 +14,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+s3 = boto3.client("s3")
 
 # Load variables from .env
 load_dotenv(dotenv_path=".env")
@@ -78,6 +82,23 @@ def extract_asteroids(data):
 
     return asteroid_data, skipped_records, records_received
 
+def save_raw_json(data):
+    with open("asteroids_raw.json", "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=4)
+
+def upload_raw_to_s3():
+    s3.upload_file(
+        "asteroids_raw.json",
+        "nasa-asteroid-intelligence",
+        "raw/asteroids_raw.json"
+    )
+
+def upload_processed_to_s3():
+    s3.upload_file(
+        "asteroids.csv",
+        "nasa-asteroid-intelligence",
+        "processed/asteroids.csv"
+    )
 
 def save_to_csv(asteroid_data):
     with open("asteroids.csv", "w", newline="", encoding="utf-8") as file:
@@ -110,6 +131,10 @@ def main():
 
     data = fetch_data()
 
+    logger.info("Saving raw NASA response")
+    save_raw_json(data)
+    upload_raw_to_s3()
+
     logger.info("Extracting and validating asteroid data")
 
     asteroid_data, skipped_records, records_received = extract_asteroids(data)
@@ -117,6 +142,9 @@ def main():
     logger.info("Saving asteroid data to CSV")
 
     save_to_csv(asteroid_data)
+
+    logger.info("Uploading processed data to S3")
+    upload_processed_to_s3()
 
     load_data(asteroid_data)
     
