@@ -3,7 +3,8 @@ def test_extract_asteroids():
     fake_data = {
         "near_earth_objects": {
             "2026-09-20": [
-                {
+                {   
+                    "id": "123456",
                     "name": "Test Asteroid",
                     "is_potentially_hazardous_asteroid": False,
                     "close_approach_data": [
@@ -31,7 +32,8 @@ def test_skip_asteroid_without_name():
     fake_data = {
         "near_earth_objects": {
             "2026-09-20": [
-                {
+                {    
+                    "id": "123456",
                     "name": "",
                     "is_potentially_hazardous_asteroid": False,
                     "close_approach_data": [
@@ -59,7 +61,8 @@ def test_skip_asteroid_without_close_approach_data():
     fake_data = {
         "near_earth_objects": {
             "2026-09-20": [
-                {
+                {   
+                    "id": "123456",
                     "name": "Test Asteroid",
                     "is_potentially_hazardous_asteroid": False,
                     "close_approach_data": []
@@ -80,7 +83,8 @@ def test_skip_asteroid_without_miss_distance():
     fake_data = {
         "near_earth_objects": {
             "2026-09-20": [
-                {
+                {    
+                    "id": "123456",
                     "name": "Test Asteroid",
                     "is_potentially_hazardous_asteroid": False,
                     "close_approach_data": [
@@ -106,7 +110,8 @@ def test_skip_asteroid_without_kilometers():
     fake_data = {
         "near_earth_objects": {
             "2026-09-20": [
-                {
+                {    
+                    "id": "123456",
                     "name": "Test Asteroid",
                     "is_potentially_hazardous_asteroid": False,
                     "close_approach_data": [
@@ -134,7 +139,8 @@ def test_extracted_asteroid_fields():
     fake_data = {
         "near_earth_objects": {
             "2026-09-20": [
-                {
+                {    
+                    "id": "123456",
                     "name": "Test Asteroid",
                     "is_potentially_hazardous_asteroid": True,
                     "close_approach_data": [
@@ -164,6 +170,7 @@ def test_extract_multiple_asteroids():
         "near_earth_objects": {
             "2026-09-20": [
                 {
+                    "id": "123456",
                     "name": "Asteroid One",
                     "is_potentially_hazardous_asteroid": False,
                     "close_approach_data": [
@@ -176,6 +183,7 @@ def test_extract_multiple_asteroids():
                     ]
                 },
                 {
+                    "id": "123456",
                     "name": "Asteroid Two",
                     "is_potentially_hazardous_asteroid": True,
                     "close_approach_data": [

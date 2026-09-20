@@ -2,6 +2,7 @@ import requests
 import csv
 import os
 import logging
+import sqlite3
 from datetime import date, timedelta
 from dotenv import load_dotenv
 logging.basicConfig(
@@ -57,6 +58,7 @@ def extract_asteroids(data):
             
             approach = asteroid["close_approach_data"][0]
 
+
             if not approach.get("miss_distance"):
                 skipped_records +=1 
                 continue
@@ -65,7 +67,8 @@ def extract_asteroids(data):
                 continue
 
             asteroid_record = {
-                "name": asteroid["name"],
+            "id": asteroid["id"],
+            "name": asteroid["name"],
                 "closest_approach_date": approach["close_approach_date"],
                 "miss_distance_km": approach["miss_distance"]["kilometers"],
                 "hazardous": asteroid["is_potentially_hazardous_asteroid"]
@@ -80,11 +83,12 @@ def save_to_csv(asteroid_data):
     with open("asteroids.csv", "w", newline="", encoding="utf-8") as file:
 
         fieldnames = [
-            "name",
-            "closest_approach_date",
-            "miss_distance_km",
-            "hazardous"
-        ]
+    "id",
+    "name",
+    "closest_approach_date",
+    "miss_distance_km",
+    "hazardous"
+]           
 
         writer = csv.DictWriter(
             file,
@@ -113,6 +117,54 @@ def main():
     logger.info("Saving asteroid data to CSV")
 
     save_to_csv(asteroid_data)
+
+    conn = sqlite3.connect("asteroids.db")
+    cursor = conn.cursor()
+
+    for row in asteroid_data:
+        cursor.execute(
+        """
+        INSERT OR IGNORE INTO asteroids (
+            asteroid_id,
+            name,
+            hazardous
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            row["id"],
+            row["name"],
+            row["hazardous"]
+        )
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO close_approaches (
+            asteroid_id,
+            approach_date,
+            miss_distance_km
+        )
+        SELECT ?, ?, ?
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM close_approaches
+            WHERE asteroid_id = ?
+              AND approach_date = ?
+        )
+        """,
+        (
+            row["id"],
+            row["closest_approach_date"],
+            row["miss_distance_km"],
+            row["id"],
+            row["closest_approach_date"]
+        )
+    )
+
+    conn.commit()
+    conn.close()
+    
 
     print()
     logger.info("API request successful")

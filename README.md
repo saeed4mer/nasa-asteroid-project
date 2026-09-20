@@ -237,6 +237,45 @@ All automated tests should pass before changes are committed.
 - Automated tests
 - Environment-variable configuration
 - Git/GitHub version control
+- Relational database schema design
+- SQLite database creation
+- CSV-to-SQL data loading
+- Python-to-SQLite integration
+- SQL aggregation and analytical queries
+- Duplicate detection
+- SQL data-quality checks
+- Asteroid intelligence queries
+- Idempotent database loading
+
+### Current Data Architecture
+
+```text
+NASA NeoWs API
+       |
+       v
+Python Ingestion
+       |
+       v
+Validation & Transformation
+       |
+       +------------------+
+       |                  |
+       v                  v
+asteroids.csv       SQLite Database
+                         |
+                  +------+------+
+                  |             |
+                  v             v
+              asteroids    close_approaches
+                  |             |
+                  +------+------+
+                         |
+                         v
+                   SQL Analytics
+                         |
+                         v
+                Asteroid Intelligence
+```
 
 ### Planned
 
