@@ -1,26 +1,29 @@
 import requests
 import csv
 import os
+from datetime import date, timedelta
 from dotenv import load_dotenv
-
 
 # Load variables from .env
 load_dotenv(dotenv_path=".env")
 
 API_KEY = os.getenv("NASA_API_KEY")
+start_date = date.today()
+end_date = start_date + timedelta(days=6)
 
 URL = "https://api.nasa.gov/neo/rest/v1/feed"
 
 
 def fetch_data():
     params = {
-        "start_date": "2026-09-19",
-        "end_date": "2026-09-25",
+        "start_date": start_date,
+        "end_date": end_date,
         "api_key": API_KEY
     }
 
-    response = requests.get(URL, params=params, timeout=10)
+    print("Fetching:", start_date, "to", end_date)
 
+    response = requests.get(URL, params=params, timeout=10)
     response.raise_for_status()
 
     return response.json()
