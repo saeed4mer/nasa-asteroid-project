@@ -6,7 +6,7 @@ import json
 import boto3
 
 from database import load_data
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from dotenv import load_dotenv
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +22,8 @@ load_dotenv(dotenv_path=".env")
 API_KEY = os.getenv("NASA_API_KEY")
 start_date = date.today()
 end_date = start_date + timedelta(days=6)
+run_date = date.today().strftime("%d-%m-%Y")
+run_time = datetime.now().strftime("%H-%M-%S")
 
 URL = "https://api.nasa.gov/neo/rest/v1/feed"
 
@@ -90,14 +92,14 @@ def upload_raw_to_s3():
     s3.upload_file(
         "asteroids_raw.json",
         "nasa-asteroid-intelligence",
-        "raw/asteroids_raw.json"
+        f"raw/{run_date}/{run_time}/asteroids_raw.json"
     )
 
 def upload_processed_to_s3():
     s3.upload_file(
         "asteroids.csv",
         "nasa-asteroid-intelligence",
-        "processed/asteroids.csv"
+        f"processed/{run_date}/{run_time}/asteroids.csv"
     )
 
 def save_to_csv(asteroid_data):
