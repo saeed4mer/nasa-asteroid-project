@@ -50,9 +50,12 @@ def extract_asteroids(data):
     records_received = 0
 
     for date, asteroid_list in asteroids.items():
-
         for asteroid in asteroid_list:
             records_received +=1
+
+            if not asteroid.get("id"):
+                skipped_records += 1
+                continue
 
             if not asteroid.get("name"):
                 skipped_records +=1
@@ -64,23 +67,48 @@ def extract_asteroids(data):
             
             approach = asteroid["close_approach_data"][0]
 
+            if not approach.get("close_approach_date"):
+                skipped_records += 1
+                continue
+
 
             if not approach.get("miss_distance"):
                 skipped_records +=1 
                 continue
-            if not approach["miss_distance"].get("kilometers"):
-                skipped_records +=1 
+            miss_distance = approach["miss_distance"].get("kilometers")
+
+            if not miss_distance:
+                skipped_records += 1
+                continue
+
+            try:
+                miss_distance = float(miss_distance)
+            except (TypeError, ValueError):
+                skipped_records += 1
+                continue
+
+            if miss_distance <= 0:
+                skipped_records += 1
+                continue
+
+            hazardous = asteroid.get("is_potentially_hazardous_asteroid")
+
+            if not isinstance(hazardous, bool):
+                skipped_records += 1
                 continue
 
             asteroid_record = {
-            "id": asteroid["id"],
-            "name": asteroid["name"],
+                "id": asteroid["id"],
+                "name": asteroid["name"],
                 "closest_approach_date": approach["close_approach_date"],
-                "miss_distance_km": approach["miss_distance"]["kilometers"],
-                "hazardous": asteroid["is_potentially_hazardous_asteroid"]
+                "miss_distance_km": miss_distance,
+                "hazardous": hazardous
             }
 
             asteroid_data.append(asteroid_record)
+
+            
+
 
     return asteroid_data, skipped_records, records_received
 

@@ -162,7 +162,7 @@ def test_extracted_asteroid_fields():
 
     assert asteroid_data[0]["name"] == "Test Asteroid"
     assert asteroid_data[0]["closest_approach_date"] == "2026-09-20"
-    assert asteroid_data[0]["miss_distance_km"] == "123456.78"
+    assert asteroid_data[0]["miss_distance_km"] == 123456.78
     assert asteroid_data[0]["hazardous"] is True
 
 def test_extract_multiple_asteroids():
