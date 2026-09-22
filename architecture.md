@@ -20,8 +20,8 @@ Python
     ↓
 Amazon S3
     ↓
-AWS Glue Data Catalog
-    ↓
 Amazon Athena
     ↓
 SQL Analytics
+    ↓
+Intelligence Dashboard

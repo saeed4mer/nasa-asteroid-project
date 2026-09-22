@@ -1,9 +1,9 @@
-CREATE TABLE asteroids (
+CREATE TABLE IF NOT EXISTS asteroids (
     asteroid_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     hazardous BOOLEAN NOT NULL
 );
-CREATE TABLE close_approaches (
+CREATE TABLE IF NOT EXISTS close_approaches (
     approach_id INTEGER PRIMARY KEY,
     asteroid_id TEXT NOT NULL,
     approach_date TEXT NOT NULL,

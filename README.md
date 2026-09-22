@@ -1,188 +1,333 @@
 # NASA Asteroid Intelligence Platform
 
-A data engineering project that ingests Near-Earth Object data from NASA's NeoWs API, validates and transforms the data using Python, and prepares it for downstream SQL analytics, cloud processing, and an interactive intelligence dashboard.
+A data engineering project that ingests Near-Earth Object (NEO) data from NASA's NeoWs API, validates and transforms it with Python, stores it locally and in Amazon S3, prepares analytics-ready Parquet data for Amazon Athena, and presents asteroid intelligence through an interactive Streamlit dashboard.
 
-## Problem
+![Tests](https://img.shields.io/badge/tests-12%20passed-brightgreen)
+![Python](https://img.shields.io/badge/python-3.x-blue)
+![CI](https://img.shields.io/badge/CI-GitHub%20Actions-informational)
 
-Near-Earth Object data contains useful information about asteroid approaches, including approach dates, miss distances, and potentially hazardous classifications. However, raw API responses are deeply nested and are not immediately convenient for analysis.
+---
 
-This project builds a structured data pipeline that takes raw NASA API data, validates it, extracts the relevant fields, and produces a clean dataset that can be used for SQL analytics and downstream data engineering systems.
+## Table of Contents
 
-## Current Pipeline
+- [Project Overview](#project-overview)
+- [Architecture](#architecture)
+- [Pipeline Workflow](#pipeline-workflow)
+- [Data Quality](#data-quality)
+- [SQL Analytics](#sql-analytics)
+- [Testing](#testing)
+- [Continuous Integration](#continuous-integration)
+- [Project Structure](#project-structure)
+- [Tech Stack](#tech-stack)
+- [Running the Project](#running-the-project)
+- [Current Status](#current-status)
+- [Future Engineering Improvements](#future-engineering-improvements)
+- [Project Goal](#project-goal)
 
-The current pipeline performs the following steps:
+---
 
-1. **Load configuration**
-   - Loads the NASA API key securely from a `.env` file using `python-dotenv`.
-   - The API key is excluded from version control through `.gitignore`.
+## Project Overview
 
-2. **Generate the date window**
-   - Dynamically calculates today's date as the start date.
-   - Creates a 7-day window using Python's `datetime` and `timedelta`.
+NASA's Near-Earth Object Web Service (NeoWs) provides valuable information about asteroid approaches, including:
 
-3. **Fetch NASA NeoWs data**
-   - Sends a request to NASA's Near-Earth Object Web Service (NeoWs) API.
-   - Uses the dynamically generated date range and API key.
-   - Uses a request timeout and HTTP error handling.
+- Asteroid identity
+- Closest approach dates
+- Miss distances
+- Potentially hazardous classifications
 
-4. **Parse the API response**
-   - Converts the JSON response into Python dictionaries.
-   - Navigates the nested `near_earth_objects` structure organized by date.
+The raw API response is deeply nested and not immediately suitable for analytics.
 
-5. **Validate incoming asteroid records**
-   - Checks that each asteroid has a name.
-   - Checks that close-approach data exists.
-   - Checks that miss-distance data exists.
-   - Checks that miss distance contains a kilometer value.
-   - Invalid records are skipped instead of entering the final dataset.
+This project builds an **end-to-end data engineering pipeline** that transforms that raw API data into structured, validated, analytics-ready datasets and exposes the resulting information through SQL analytics and an interactive intelligence dashboard.
 
-6. **Transform the data**
-   - Extracts only the fields required by the project:
-     - Asteroid name
-     - Closest approach date
-     - Miss distance in kilometers
-     - Potentially hazardous classification
-   - Converts the nested NASA response into a flat list of dictionaries.
+---
 
-7. **Track data quality**
-   - Records how many asteroid records were received.
-   - Records how many valid records were produced.
-   - Records how many invalid records were skipped.
+## Architecture
 
-8. **Write the processed data**
-   - Saves the validated asteroid records to `asteroids.csv`.
-   - Uses `csv.DictWriter` with a consistent schema.
+### Local Development Pipeline
 
-9. **Logging and error handling**
-   - Uses Python's `logging` module to track pipeline execution.
-   - Handles HTTP errors, network errors, and unexpected exceptions.
-
-10. **Automated testing**
-    - Uses `pytest` to test the extraction and validation logic.
-    - Tests valid records, invalid records, missing fields, multiple records, and extracted field values.
-
-### Current Data Flow
-
-```text
+```
 NASA NeoWs API
-       │
-       ▼
-Dynamic 7-Day Request
-       │
-       ▼
-Raw JSON Response
-       │
-       ▼
-Parse Nested JSON
-       │
-       ▼
-Validate Records
-       │
-       ├──────── Invalid → Skip + Count
-       │
-       ▼
-Transform to Structured Records
-       │
-       ▼
-Data Quality Metrics
-       │
-       ▼
-CSV Output
-       │
-       ▼
-Automated Tests
+      ↓
+Python Ingestion
+      ↓
+Validation & Transformation
+      ↓
+CSV + SQLite
+      ↓
+SQL Analytics
 ```
 
-## Features
+### Cloud Analytics Pipeline
 
-- **Dynamic data ingestion** — Automatically fetches a rolling 7-day window of Near-Earth Object data.
-- **Secure API configuration** — Stores the NASA API key in environment variables rather than source code.
-- **Data validation** — Rejects incomplete asteroid records before they enter the processed dataset.
-- **Data transformation** — Converts NASA's nested JSON response into a structured dataset.
-- **Data-quality tracking** — Reports records received, valid records, and skipped records for each run.
-- **Error handling** — Handles HTTP, network, and unexpected runtime errors.
-- **Structured CSV output** — Produces a consistent, analysis-ready CSV dataset.
-- **Logging** — Records important pipeline events and errors.
-- **Automated testing** — Uses `pytest` to verify extraction, validation, and transformation logic.
-- **Version control** — Project development is tracked using Git and GitHub.
+```
+NASA NeoWs API
+      ↓
+Python ETL Pipeline
+      ↓
+Amazon S3
+   ┌──────┴──────┐
+   ↓             ↓
+Raw JSON   Processed Parquet
+                  ↓
+            Amazon Athena
+                  ↓
+            SQL Analytics
+                  ↓
+       Intelligence Dashboard
+```
+
+The project uses **S3** as the cloud storage layer and **Athena** as the serverless analytical query layer.
+
+---
+
+## Pipeline Workflow
+
+### 1. Configuration
+
+- Configuration is loaded from environment variables using `python-dotenv`.
+- Sensitive credentials are stored locally in `.env` and excluded from version control.
+- A `.env.example` file is provided as a configuration template.
+
+### 2. NASA API Ingestion
+
+The pipeline retrieves Near-Earth Object data from NASA's NeoWs feed API.
+
+- The default ingestion window is dynamically generated from the current date.
+- Custom date ranges are supported via CLI arguments:
+
+```bash
+python nasa_asteroids.py --start-date 2026-09-01 --end-date 2026-09-07
+```
+
+### 3. API Reliability
+
+The HTTP client includes:
+
+- Request timeouts
+- Retry handling with exponential backoff
+- HTTP error handling
+- Network error handling
+
+Retry handling covers common transient HTTP responses: `429`, `500`, `502`, `503`, `504`.
+
+### 4. Data Extraction
+
+NASA's nested JSON response is parsed to extract the fields required for downstream processing:
+
+| Field | Description |
+|---|---|
+| `id` | NASA asteroid identifier |
+| `name` | Asteroid name |
+| `closest_approach_date` | Closest approach date |
+| `miss_distance_km` | Miss distance in kilometers |
+| `hazardous` | Potentially hazardous classification |
+
+### 5. Data Validation
+
+Incoming records are validated before entering the processed dataset. Records are skipped when required information is missing or invalid, including:
+
+- Asteroid ID
+- Asteroid name
+- Close-approach data
+- Close-approach date
+- Miss-distance information (raw and km value)
+- Valid hazardous classification
+
+The pipeline tracks **records received**, **valid records**, and **skipped records** for every run.
+
+### 6. Local Data Storage
+
+Validated data is written to:
+
+- `asteroids.csv`
+- `asteroids.parquet` (explicit PyArrow schema, Snappy compression)
+
+Processed records are also loaded into **SQLite** for relational analytics.
+
+### 7. Relational Database
+
+The local SQLite database contains two related tables:
+
+```
+asteroids
+    │
+    │ 1-to-many
+    ↓
+close_approaches
+```
+
+The database loader is **idempotent**, preventing duplicate asteroid and close-approach records from being inserted on repeated pipeline runs.
+
+### 8. Amazon S3
+
+The pipeline uploads data to S3 using run-based, date-partitioned paths.
+
+Processed Parquet data:
+
+```
+processed/
+└── year=YYYY/
+    └── month=MM/
+        └── day=DD/
+            └── asteroids_<run-time>.parquet
+```
+
+Processed CSV data:
+
+```
+processed_csv/
+└── year=YYYY/
+    └── month=MM/
+        └── day=DD/
+            └── asteroids_<run-time>.csv
+```
+
+Raw API responses are kept outside version control.
+
+### 9. Amazon Athena
+
+Processed Parquet data is designed for analytical querying through Amazon Athena. Prepared SQL analytics include:
+
+- Total asteroid count
+- Potentially hazardous asteroid count
+- Closest / farthest approaches
+- Average miss distance
+- Hazardous vs. non-hazardous distribution
+- Close approaches by date
+- Potentially hazardous objects beyond a specified distance
+
+### 10. Intelligence Dashboard
+
+An interactive **Streamlit** dashboard provides:
+
+- Interactive asteroid visualization
+- Hazardous / nominal filtering
+- Miss-distance filtering
+- Asteroid selection with identifiers, closest approach dates, miss distances, and lunar-distance equivalents
+- Hazard classification display
+
+> Note: the orbital visualization is an illustrative visual model, not an astronomical ephemeris calculation.
+
+---
+
+## Data Quality
+
+The pipeline explicitly tracks ingestion quality on every run:
+
+- Records received
+- Valid records
+- Skipped records
+
+Validation occurs **before** data enters the processed datasets or relational database, preventing incomplete records from silently propagating downstream.
+
+---
+
+## SQL Analytics
+
+A dedicated Athena query collection lives in [`athena_queries.sql`](athena_queries.sql), including:
+
+- Total asteroid count
+- Potentially hazardous asteroid count
+- Closest asteroid approaches
+- Average miss distance
+- Hazardous vs. non-hazardous distribution
+- Closest potentially hazardous objects
+
+The local SQLite layer provides an additional relational analytics environment for development and validation.
+
+---
+
+## Testing
+
+The project uses `pytest`. The current suite contains **12 tests**, covering:
+
+- Valid asteroid extraction
+- Missing asteroid names
+- Missing close-approach data
+- Missing miss-distance data
+- Missing kilometer values
+- Extracted field correctness
+- Multiple asteroid records
+- Parquet generation
+- Mocked NASA API requests
+- Mocked S3 uploads
+- Database integration
+- Database loading behavior
+
+**Current status:** ✅ 12 passed
+
+Tests are designed to avoid making live NASA API requests.
+
+---
+
+## Continuous Integration
+
+The repository includes a GitHub Actions workflow at `.github/workflows/ci.yml` that:
+
+1. Checks out the repository
+2. Sets up Python
+3. Installs project dependencies
+4. Runs the pytest suite
+
+---
+
+## Project Structure
+
+```
+NASA-Intelligence-Platform/
+│
+├── nasa_asteroids.py
+├── database.py
+├── dashboard.py
+│
+├── test_nasa_asteroids.py
+│
+├── schema.sql
+├── athena_schema.sql
+├── athena_queries.sql
+│
+├── asteroids.csv
+├── asteroids.parquet
+│
+├── architecture.md
+├── requirements.txt
+├── .env.example
+├── .gitignore
+│
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+│
+└── README.md
+```
+
+Local-only files such as `.env`, SQLite databases, and raw API responses are excluded from version control.
+
+---
 
 ## Tech Stack
 
 | Technology | Purpose |
 |---|---|
-| Python | Data ingestion, transformation, validation, and pipeline logic |
-| NASA NeoWs API | Source of Near-Earth Object data |
-| Requests | HTTP communication with the NASA API |
-| python-dotenv | Secure environment-variable management |
-| CSV | Current processed-data storage |
+| Python | Ingestion, transformation, validation, pipeline orchestration |
+| NASA NeoWs API | Source data |
+| Requests | API communication |
+| python-dotenv | Environment configuration |
+| Pandas | Data handling for the dashboard |
+| PyArrow | Parquet generation and schema management |
+| SQLite | Local relational data storage |
+| SQL | Data analytics |
+| Amazon S3 | Cloud object storage |
+| Amazon Athena | Serverless SQL analytics |
+| Boto3 | AWS integration |
+| Streamlit | Interactive intelligence dashboard |
 | Pytest | Automated testing |
 | Git | Version control |
-| GitHub | Source-code hosting and project collaboration |
+| GitHub Actions | Continuous integration |
 
-## Data Source
+---
 
-This project uses NASA's **Near Earth Object Web Service (NeoWs)** to retrieve information about Near-Earth Objects.
-
-The pipeline uses the NeoWs feed endpoint to retrieve asteroid data for a dynamically generated 7-day window.
-
-For each asteroid, the current pipeline extracts:
-
-- Asteroid name
-- Closest approach date
-- Miss distance in kilometers
-- Potentially hazardous classification
-
-The raw response is provided as nested JSON and is transformed into a flat, structured dataset before being written to CSV.
-
-## Data Validation
-
-The pipeline validates incoming asteroid records before adding them to the processed dataset.
-
-A record is skipped if:
-
-- The asteroid name is missing.
-- Close-approach data is missing.
-- Miss-distance data is missing.
-- The miss-distance value in kilometers is missing.
-
-The pipeline also tracks data-quality metrics for each run:
-
-- **Records received**
-- **Valid records**
-- **Skipped records**
-
-This prevents incomplete records from silently entering the downstream dataset and provides visibility into the quality of each ingestion run.
-
-## Testing
-
-The project uses `pytest` to test the core data extraction and validation logic without making live API requests.
-
-The test suite currently covers:
-
-- Valid asteroid records
-- Missing asteroid names
-- Missing close-approach data
-- Missing miss-distance data
-- Missing kilometer values
-- Correct field extraction
-- Processing multiple asteroid records
-
-All current tests pass successfully.
-
-## Project Structure
-
-```text
-NASA-Intelligence-Platform/
-│
-├── nasa_asteroids.py          # Main ingestion and transformation pipeline
-├── test_nasa_asteroids.py     # Automated tests
-├── asteroids.csv              # Current processed dataset
-├── .env                       # Local API credentials (not committed)
-├── .gitignore                 # Files excluded from Git
-└── README.md                  # Project documentation
-```
-
-## How to Run
+## Running the Project
 
 ### 1. Clone the repository
 
@@ -194,139 +339,104 @@ cd NASA-Intelligence-Platform
 ### 2. Install dependencies
 
 ```bash
-pip install requests python-dotenv pytest
+pip install -r requirements.txt
 ```
 
-### 3. Configure the NASA API key
+### 3. Configure environment variables
 
-Create a `.env` file in the project root:
+Create a local `.env` file:
 
-```text
+```env
 NASA_API_KEY=your_nasa_api_key
+AWS_ACCESS_KEY_ID=your_aws_access_key_id
+AWS_SECRET_ACCESS_KEY=your_aws_secret_access_key
+AWS_DEFAULT_REGION=us-east-1
+S3_BUCKET_NAME=nasa-asteroid-intelligence
 ```
 
-The `.env` file is intentionally excluded from Git.
+> ⚠️ Never commit `.env` to version control.
 
-### 4. Run the pipeline
+### 4. Run the ingestion pipeline
 
 ```bash
 python nasa_asteroids.py
 ```
 
-The pipeline will fetch the current 7-day window, validate and transform the data, and generate `asteroids.csv`.
-
-### 5. Run the tests
+Or specify a custom date range:
 
 ```bash
-python -m pytest
+python nasa_asteroids.py --start-date 2026-09-01 --end-date 2026-09-07
 ```
 
-All automated tests should pass before changes are committed.
+### 5. Run tests
+
+```bash
+pytest -v
+```
+
+### 6. Launch the dashboard
+
+```bash
+streamlit run dashboard.py
+```
+
+---
 
 ## Current Status
 
-### Completed
+### ✅ Implemented
 
 - NASA NeoWs API ingestion
-- Dynamic 7-day data window
-- JSON parsing and transformation
-- Data validation
-- Data-quality metrics
-- CSV generation
-- Logging and error handling
-- Automated tests
-- Environment-variable configuration
-- Git/GitHub version control
-- Relational database schema design
-- SQLite database creation
-- CSV-to-SQL data loading
-- Python-to-SQLite integration
-- SQL aggregation and analytical queries
-- Duplicate detection
-- SQL data-quality checks
-- Asteroid intelligence queries
-- Idempotent database loading
+- Dynamic date-window ingestion
+- Custom CLI date ranges
+- API timeout, retry, and backoff handling
+- JSON parsing
+- Data validation and data-quality metrics
+- CSV and Parquet generation
+- SQLite relational database with idempotent loading
+- Local SQL analytics
+- Amazon S3 integration with raw/processed separation and partitioned layout
+- Amazon Athena schema and analytical queries
+- Interactive Streamlit dashboard
+- Automated testing (pytest)
+- GitHub Actions CI
+- Environment-based configuration
+- Architecture documentation
 
-### Current Data Architecture
+### 🚧 In Progress
 
-```text
-NASA NeoWs API
-       |
-       v
-Python Ingestion
-       |
-       v
-Validation & Transformation
-       |
-       +------------------+
-       |                  |
-       v                  v
-asteroids.csv       SQLite Database
-                         |
-                  +------+------+
-                  |             |
-                  v             v
-              asteroids    close_approaches
-                  |             |
-                  +------+------+
-                         |
-                         v
-                   SQL Analytics
-                         |
-                         v
-                Asteroid Intelligence
-```
+- End-to-end cloud analytics validation
+- Further data-quality validation
+- Production-level orchestration and scheduling
+- Expanded intelligence metrics
+- Historical asteroid analysis
+- Final portfolio documentation
 
-### Planned
+---
 
-The project will be expanded into a full data engineering platform with:
+## Future Engineering Improvements
 
-- SQL-based data storage and analytics
-- Improved data modeling
-- Incremental and idempotent data loading
-- Cloud-based storage and processing on AWS
 - Pipeline orchestration and scheduling
-- Monitoring and improved observability
+- Automated data-quality monitoring
+- Historical data accumulation, incremental processing, and backfills
+- Schema evolution handling
+- Improved observability
+- Pipeline failure recovery
+- Advanced asteroid risk and priority metrics
+- Historical trend analysis
 - API/data-serving layer
-- Interactive asteroid intelligence dashboard
-- Automated deployment and CI/CD
+- Dashboard expansion
+- Deployment automation
 
-## Future Architecture
+---
 
-The current Python → CSV pipeline is the foundation of a larger data engineering platform.
+## Project Goal
 
-The planned architecture is:
+The goal of this project is to demonstrate an end-to-end data engineering workflow using a real-world scientific data source:
 
-```text
-                    NASA NeoWs API
-                           │
-                           ▼
-                  Python Ingestion
-                           │
-                           ▼
-                Validation & Transformation
-                           │
-                    ┌──────┴──────┐
-                    ▼             ▼
-               Raw Storage    Processed Data
-                                  │
-                                  ▼
-                           SQL Data Layer
-                                  │
-                         ┌────────┴────────┐
-                         ▼                 ▼
-                    Analytics        Data Quality
-                         │
-                         ▼
-                  API / Data Serving
-                         │
-                         ▼
-                Interactive Dashboard
-                         │
-                         ▼
-                       Users
+```
+Data Ingestion → Data Validation → Data Transformation → Data Storage
+    → Cloud Data Lake → SQL Analytics → Data Intelligence → Interactive Visualization
 ```
 
-The planned cloud architecture will introduce AWS-based storage, processing, scheduling, monitoring, and deployment as the project progresses.
-
-The final platform is intended to provide an interactive interface for exploring Near-Earth Object activity, including approach dates, miss distances, hazardous classifications, trends, and other derived insights.
+The resulting system provides a foundation for exploring Near-Earth Object activity and building analytical intelligence around asteroid approaches, miss distances, hazardous classifications, and historical patterns.
