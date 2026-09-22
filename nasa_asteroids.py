@@ -1,8 +1,10 @@
 import argparse
+import copy
 import csv
 import json 
 import logging
 import os
+import re
 from datetime import date, datetime, timedelta
 
 import boto3
@@ -151,9 +153,41 @@ def extract_asteroids(data):
 
     return asteroid_data, skipped_records, records_received
 
-def save_raw_json(data):
-    with open("asteroids_raw.json", "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=4)
+def redact_api_key(text):
+    """Safely redact api_key query parameters from a URL or text string."""
+    if not isinstance(text, str):
+        return text
+    return re.sub(r'([?&]api_key=)[^&"\'\s]+', r'\g<1>REDACTED', text)
+
+
+def sanitize_raw_data(data):
+    """Sanitize API-key-bearing URL values in top-level and per-asteroid links."""
+    if not isinstance(data, dict):
+        return data
+
+    sanitized = copy.deepcopy(data)
+
+    if "links" in sanitized and isinstance(sanitized["links"], dict):
+        for key, val in sanitized["links"].items():
+            if isinstance(val, str):
+                sanitized["links"][key] = redact_api_key(val)
+
+    if "near_earth_objects" in sanitized and isinstance(sanitized["near_earth_objects"], dict):
+        for asteroid_list in sanitized["near_earth_objects"].values():
+            if isinstance(asteroid_list, list):
+                for asteroid in asteroid_list:
+                    if isinstance(asteroid, dict) and "links" in asteroid and isinstance(asteroid["links"], dict):
+                        for key, val in asteroid["links"].items():
+                            if isinstance(val, str):
+                                asteroid["links"][key] = redact_api_key(val)
+
+    return sanitized
+
+
+def save_raw_json(data, filename="asteroids_raw.json"):
+    sanitized = sanitize_raw_data(data)
+    with open(filename, "w", encoding="utf-8") as file:
+        json.dump(sanitized, file, indent=4)
 
 def upload_raw_to_s3():
     s3 = boto3.client("s3")
@@ -300,10 +334,10 @@ if __name__ == "__main__":
         main(start_date_str=args.start_date, end_date_str=args.end_date)
 
     except requests.exceptions.HTTPError as error:
-        logger.error("NASA API returned an HTTP error: %s", error)
+        logger.error("NASA API returned an HTTP error: %s", redact_api_key(str(error)))
 
     except requests.exceptions.RequestException as error:
-        logger.error("Network error: %s", error)
+        logger.error("Network error: %s", redact_api_key(str(error)))
 
     except Exception as error:
-        logger.error("Something went wrong: %s", error)
+        logger.error("Something went wrong: %s", redact_api_key(str(error)))
