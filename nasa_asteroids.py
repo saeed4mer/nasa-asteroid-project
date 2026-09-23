@@ -6,7 +6,8 @@ import logging
 import os
 import re
 import sys
-from datetime import date, datetime, timedelta
+import uuid
+from datetime import date, datetime, timedelta, timezone
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -91,34 +92,45 @@ def fetch_data(start=None, end=None, key=None):
 def extract_asteroids(data):
     asteroids = data["near_earth_objects"]
     asteroid_data = []
+    seen_keys = set()
     skipped_records = 0
     records_received = 0
 
     for date, asteroid_list in asteroids.items():
         for asteroid in asteroid_list:
-            records_received +=1
+            records_received += 1
 
             if not asteroid.get("id"):
                 skipped_records += 1
                 continue
 
             if not asteroid.get("name"):
-                skipped_records +=1
-                continue
-
-            if not asteroid.get("close_approach_data"):
-                skipped_records +=1
-                continue
-            
-            approach = asteroid["close_approach_data"][0]
-
-            if not approach.get("close_approach_date"):
                 skipped_records += 1
                 continue
 
+            if not asteroid.get("close_approach_data"):
+                skipped_records += 1
+                continue
+
+            approach = asteroid["close_approach_data"][0]
+
+            approach_date = approach.get("close_approach_date")
+            if not approach_date:
+                skipped_records += 1
+                continue
+
+            try:
+                datetime.strptime(approach_date, "%Y-%m-%d")
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Skipping asteroid record with invalid close_approach_date: %s",
+                    approach_date
+                )
+                skipped_records += 1
+                continue
 
             if not approach.get("miss_distance"):
-                skipped_records +=1 
+                skipped_records += 1
                 continue
             miss_distance = approach["miss_distance"].get("kilometers")
 
@@ -142,18 +154,26 @@ def extract_asteroids(data):
                 skipped_records += 1
                 continue
 
+            dedup_key = (str(asteroid["id"]), approach_date)
+            if dedup_key in seen_keys:
+                logger.warning(
+                    "Skipping duplicate asteroid approach: id=%s, date=%s",
+                    asteroid["id"],
+                    approach_date
+                )
+                skipped_records += 1
+                continue
+            seen_keys.add(dedup_key)
+
             asteroid_record = {
                 "id": asteroid["id"],
                 "name": asteroid["name"],
-                "closest_approach_date": approach["close_approach_date"],
+                "closest_approach_date": approach_date,
                 "miss_distance_km": miss_distance,
                 "hazardous": hazardous
             }
 
             asteroid_data.append(asteroid_record)
-
-            
-
 
     return asteroid_data, skipped_records, records_received
 
@@ -193,7 +213,7 @@ def save_raw_json(data, filename="asteroids_raw.json"):
     with open(filename, "w", encoding="utf-8") as file:
         json.dump(sanitized, file, indent=4)
 
-def upload_raw_to_s3(start_date=None):
+def upload_raw_to_s3(start_date=None, metadata=None):
     if start_date is None:
         start_date = date.today()
     elif isinstance(start_date, str):
@@ -204,12 +224,15 @@ def upload_raw_to_s3(start_date=None):
     day = start_date.strftime("%d")
     s3_key = f"raw/year={year}/month={month}/day={day}/asteroids_raw.json"
 
+    extra_kwargs = {"ExtraArgs": {"Metadata": metadata}} if metadata else {}
+
     s3 = boto3.client("s3")
     try:
         s3.upload_file(
             "asteroids_raw.json",
             S3_BUCKET_NAME,
-            s3_key
+            s3_key,
+            **extra_kwargs
         )
         logger.info("Uploaded raw JSON to s3://%s/%s", S3_BUCKET_NAME, s3_key)
     except (BotoCoreError, ClientError) as error:
@@ -221,7 +244,7 @@ def upload_raw_to_s3(start_date=None):
         )
         raise
 
-def upload_processed_to_s3(start_date=None):
+def upload_processed_to_s3(start_date=None, metadata=None):
     if start_date is None:
         start_date = date.today()
     elif isinstance(start_date, str):
@@ -233,12 +256,15 @@ def upload_processed_to_s3(start_date=None):
     parquet_key = f"processed/year={year}/month={month}/day={day}/asteroids.parquet"
     csv_key = f"processed_csv/year={year}/month={month}/day={day}/asteroids.csv"
 
+    extra_kwargs = {"ExtraArgs": {"Metadata": metadata}} if metadata else {}
+
     s3 = boto3.client("s3")
     try:
         s3.upload_file(
             "asteroids.parquet",
             S3_BUCKET_NAME,
-            parquet_key
+            parquet_key,
+            **extra_kwargs
         )
         logger.info("Uploaded processed Parquet to s3://%s/%s", S3_BUCKET_NAME, parquet_key)
     except (BotoCoreError, ClientError) as error:
@@ -254,7 +280,8 @@ def upload_processed_to_s3(start_date=None):
         s3.upload_file(
             "asteroids.csv",
             S3_BUCKET_NAME,
-            csv_key
+            csv_key,
+            **extra_kwargs
         )
         logger.info("Uploaded processed CSV to s3://%s/%s", S3_BUCKET_NAME, csv_key)
     except (BotoCoreError, ClientError) as error:
@@ -312,6 +339,13 @@ def parse_args():
 
 
 def main(start_date_str=None, end_date_str=None):
+    run_id = uuid.uuid4().hex[:12]
+    ingested_at = datetime.now(timezone.utc).isoformat()
+    lineage_metadata = {
+        "run_id": run_id,
+        "ingested_at": ingested_at,
+        "source": "nasa_neows_api"
+    }
 
     if not API_KEY:
         logger.error("NASA_API_KEY was not found.")
@@ -348,7 +382,7 @@ def main(start_date_str=None, end_date_str=None):
             days_diff
         )
 
-    logger.info("Starting NASA asteroid pipeline")
+    logger.info("[%s] Starting NASA asteroid pipeline (run_id: %s)", run_id, run_id)
 
     data = fetch_data(start=resolved_start, end=resolved_end, key=API_KEY)
 
@@ -358,6 +392,39 @@ def main(start_date_str=None, end_date_str=None):
     logger.info("Extracting and validating asteroid data")
 
     asteroid_data, skipped_records, records_received = extract_asteroids(data)
+    records_valid = len(asteroid_data)
+    rejection_pct = (skipped_records / records_received * 100) if records_received > 0 else 0.0
+
+    logger.info(
+        "[%s] Extraction summary: received=%d, valid=%d, skipped=%d, rejection=%.1f%%",
+        run_id,
+        records_received,
+        records_valid,
+        skipped_records,
+        rejection_pct
+    )
+
+    if rejection_pct > 20.0:
+        logger.warning(
+            "[%s] High rejection rate: %.1f%% of received records were skipped (%d/%d)",
+            run_id,
+            rejection_pct,
+            skipped_records,
+            records_received
+        )
+
+    if records_valid == 0:
+        logger.error(
+            "[%s] Data quality failure: 0 valid asteroid records produced "
+            "(received: %d, valid: %d, skipped: %d, rejection: %.1f%%). "
+            "Halting pipeline to prevent uploading empty dataset to S3.",
+            run_id,
+            records_received,
+            records_valid,
+            skipped_records,
+            rejection_pct
+        )
+        return 1
 
     logger.info("Saving asteroid data to CSV and Parquet")
 
@@ -367,17 +434,17 @@ def main(start_date_str=None, end_date_str=None):
     load_data(asteroid_data)
 
     logger.info("Uploading raw NASA response to S3")
-    upload_raw_to_s3(start_date=resolved_start)
+    upload_raw_to_s3(start_date=resolved_start, metadata=lineage_metadata)
 
     logger.info("Uploading processed data to S3")
-    upload_processed_to_s3(start_date=resolved_start)
-    
+    upload_processed_to_s3(start_date=resolved_start, metadata=lineage_metadata)
 
     print()
+    logger.info("[%s] Pipeline run %s completed successfully", run_id, run_id)
     logger.info("API request successful")
     logger.info("CSV and Parquet created successfully")
     logger.info("Records received: %d", records_received)
-    logger.info("Total valid asteroids: %d", len(asteroid_data))
+    logger.info("Total valid asteroids: %d", records_valid)
     logger.info("Skipped invalid records: %d", skipped_records)
     return 0
 

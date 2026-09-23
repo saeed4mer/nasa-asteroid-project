@@ -183,7 +183,7 @@ def test_extract_multiple_asteroids():
                     ]
                 },
                 {
-                    "id": "123456",
+                    "id": "789012",
                     "name": "Asteroid Two",
                     "is_potentially_hazardous_asteroid": True,
                     "close_approach_data": [
@@ -537,7 +537,8 @@ def test_cli_exits_code_1_when_unexpected_pipeline_exception_occurs(tmp_path):
         "from unittest.mock import patch\n"
         "import os, runpy\n"
         "with patch('requests.Session.get') as mock_get:\n"
-        "    mock_get.return_value.json.return_value = {'near_earth_objects': {}}\n"
+        "    valid_data = {'near_earth_objects': {'2026-09-20': [{'id': '123', 'name': 'A', 'close_approach_data': [{'close_approach_date': '2026-09-20', 'miss_distance': {'kilometers': '100000'}}], 'is_potentially_hazardous_asteroid': False}]}}\n"
+        "    mock_get.return_value.json.return_value = valid_data\n"
         "    mock_get.return_value.raise_for_status.return_value = None\n"
         "    with patch('boto3.client', side_effect=RuntimeError('Unexpected AWS error')):\n"
         "        with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
@@ -672,7 +673,8 @@ def test_main_exits_code_1_on_s3_failure(tmp_path):
         "from botocore.exceptions import ClientError\n"
         "err = ClientError({'Error': {'Code': '403', 'Message': 'AccessDenied'}}, 'PutObject')\n"
         "with patch('requests.Session.get') as mock_get:\n"
-        "    mock_get.return_value.json.return_value = {'near_earth_objects': {}}\n"
+        "    valid_data = {'near_earth_objects': {'2026-09-20': [{'id': '123', 'name': 'A', 'close_approach_data': [{'close_approach_date': '2026-09-20', 'miss_distance': {'kilometers': '100000'}}], 'is_potentially_hazardous_asteroid': False}]}}\n"
+        "    mock_get.return_value.json.return_value = valid_data\n"
         "    mock_get.return_value.raise_for_status.return_value = None\n"
         "    with patch('boto3.client') as mock_boto:\n"
         "        mock_s3 = MagicMock()\n"
@@ -703,9 +705,11 @@ def test_main_executes_local_pipeline_before_s3_failure(monkeypatch):
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     client_error = ClientError({"Error": {"Code": "500", "Message": "S3Unavailable"}}, "PutObject")
 
+    valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
+
     with patch("nasa_asteroids.fetch_data", return_value=fake_data), \
          patch("nasa_asteroids.save_raw_json", side_effect=lambda *a, **kw: call_order.append("save_raw")), \
-         patch("nasa_asteroids.extract_asteroids", return_value=([], 0, 0)), \
+         patch("nasa_asteroids.extract_asteroids", return_value=(valid_record, 0, 1)), \
          patch("nasa_asteroids.save_to_csv", side_effect=lambda *a, **kw: call_order.append("save_csv")), \
          patch("nasa_asteroids.save_to_parquet", side_effect=lambda *a, **kw: call_order.append("save_parquet")), \
          patch("nasa_asteroids.load_data", side_effect=lambda *a, **kw: call_order.append("load_data")), \
@@ -902,10 +906,12 @@ def test_main_dynamic_date_evaluation_and_propagation(monkeypatch):
     monkeypatch.setattr(nasa_asteroids, "date", MockDate)
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
 
+    valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-11-10", "miss_distance_km": 100.0, "hazardous": False}]
+
     with (
         patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}) as mock_fetch,
         patch("nasa_asteroids.save_raw_json"),
-        patch("nasa_asteroids.extract_asteroids", return_value=([], 0, 0)),
+        patch("nasa_asteroids.extract_asteroids", return_value=(valid_record, 0, 1)),
         patch("nasa_asteroids.save_to_csv"),
         patch("nasa_asteroids.save_to_parquet"),
         patch("nasa_asteroids.load_data"),
@@ -923,8 +929,8 @@ def test_main_dynamic_date_evaluation_and_propagation(monkeypatch):
             end=expected_end,
             key="TEST_KEY"
         )
-        mock_upload_raw.assert_called_once_with(start_date=expected_start)
-        mock_upload_proc.assert_called_once_with(start_date=expected_start)
+        assert mock_upload_raw.call_args[1]["start_date"] == expected_start
+        assert mock_upload_proc.call_args[1]["start_date"] == expected_start
 
 
 def test_old_module_level_date_variables_do_not_exist():
@@ -934,3 +940,309 @@ def test_old_module_level_date_variables_do_not_exist():
     assert not hasattr(nasa_asteroids, "run_time")
     assert not hasattr(nasa_asteroids, "start_date")
     assert not hasattr(nasa_asteroids, "end_date")
+
+def test_extract_asteroids_skips_malformed_close_approach_date():
+    fake_data = {
+        "near_earth_objects": {
+            "2026-09-20": [
+                {
+                    "id": "1",
+                    "name": "Asteroid Bad Date",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "not-a-valid-date",
+                            "miss_distance": {"kilometers": "100000"}
+                        }
+                    ]
+                },
+                {
+                    "id": "2",
+                    "name": "Asteroid Impossible Date",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-99-99",
+                            "miss_distance": {"kilometers": "100000"}
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    asteroid_data, skipped_records, records_received = nasa_asteroids.extract_asteroids(fake_data)
+    assert len(asteroid_data) == 0
+    assert skipped_records == 2
+    assert records_received == 2
+
+
+def test_extract_asteroids_skips_non_numeric_miss_distance():
+    fake_data = {
+        "near_earth_objects": {
+            "2026-09-20": [
+                {
+                    "id": "1",
+                    "name": "Asteroid Non Numeric",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {"kilometers": "invalid_number"}
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    asteroid_data, skipped_records, records_received = nasa_asteroids.extract_asteroids(fake_data)
+    assert len(asteroid_data) == 0
+    assert skipped_records == 1
+    assert records_received == 1
+
+
+def test_extract_asteroids_skips_zero_and_negative_miss_distance():
+    fake_data = {
+        "near_earth_objects": {
+            "2026-09-20": [
+                {
+                    "id": "1",
+                    "name": "Asteroid Zero Dist",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {"kilometers": "0"}
+                        }
+                    ]
+                },
+                {
+                    "id": "2",
+                    "name": "Asteroid Neg Dist",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {"kilometers": "-500.5"}
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    asteroid_data, skipped_records, records_received = nasa_asteroids.extract_asteroids(fake_data)
+    assert len(asteroid_data) == 0
+    assert skipped_records == 2
+    assert records_received == 2
+
+
+def test_extract_asteroids_skips_non_boolean_hazardous():
+    fake_data = {
+        "near_earth_objects": {
+            "2026-09-20": [
+                {
+                    "id": "1",
+                    "name": "Asteroid String Haz",
+                    "is_potentially_hazardous_asteroid": "True",
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {"kilometers": "100000"}
+                        }
+                    ]
+                },
+                {
+                    "id": "2",
+                    "name": "Asteroid None Haz",
+                    "is_potentially_hazardous_asteroid": None,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {"kilometers": "100000"}
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    asteroid_data, skipped_records, records_received = nasa_asteroids.extract_asteroids(fake_data)
+    assert len(asteroid_data) == 0
+    assert skipped_records == 2
+    assert records_received == 2
+
+
+def test_extract_asteroids_deduplicates_identical_approaches():
+    fake_data = {
+        "near_earth_objects": {
+            "2026-09-20": [
+                {
+                    "id": "123",
+                    "name": "Asteroid Dup",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {"kilometers": "100000"}
+                        }
+                    ]
+                },
+                {
+                    "id": "123",
+                    "name": "Asteroid Dup",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {"kilometers": "100000"}
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    asteroid_data, skipped_records, records_received = nasa_asteroids.extract_asteroids(fake_data)
+    assert len(asteroid_data) == 1
+    assert skipped_records == 1
+    assert records_received == 2
+
+
+def test_main_zero_valid_records_returns_code_1(monkeypatch):
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    invalid_data = {
+        "near_earth_objects": {
+            "2026-09-20": [
+                {
+                    "id": "1",
+                    "name": "Bad Asteroid",
+                    "is_potentially_hazardous_asteroid": "invalid_bool",
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {"kilometers": "100000"}
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    with patch("nasa_asteroids.fetch_data", return_value=invalid_data), \
+         patch("nasa_asteroids.save_raw_json"):
+        exit_code = nasa_asteroids.main()
+        assert exit_code == 1
+
+
+def test_main_empty_nasa_response_triggers_circuit_breaker(monkeypatch):
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    empty_data = {"near_earth_objects": {}}
+
+    with patch("nasa_asteroids.fetch_data", return_value=empty_data), \
+         patch("nasa_asteroids.save_raw_json"):
+        exit_code = nasa_asteroids.main()
+        assert exit_code == 1
+
+
+def test_circuit_breaker_prevents_processed_files_and_s3_uploads(monkeypatch):
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+
+    with patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}), \
+         patch("nasa_asteroids.save_raw_json") as mock_save_raw, \
+         patch("nasa_asteroids.save_to_csv") as mock_save_csv, \
+         patch("nasa_asteroids.save_to_parquet") as mock_save_parquet, \
+         patch("nasa_asteroids.load_data") as mock_load_data, \
+         patch("nasa_asteroids.upload_raw_to_s3") as mock_upload_raw, \
+         patch("nasa_asteroids.upload_processed_to_s3") as mock_upload_proc:
+
+        exit_code = nasa_asteroids.main()
+
+        assert exit_code == 1
+        mock_save_raw.assert_called_once()
+        mock_save_csv.assert_not_called()
+        mock_save_parquet.assert_not_called()
+        mock_load_data.assert_not_called()
+        mock_upload_raw.assert_not_called()
+        mock_upload_proc.assert_not_called()
+
+
+def test_s3_upload_functions_receive_expected_lineage_metadata():
+    from unittest.mock import MagicMock, patch
+
+    metadata = {
+        "run_id": "test_run_123",
+        "ingested_at": "2026-09-23T12:00:00+00:00",
+        "source": "nasa_neows_api"
+    }
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_raw_to_s3(metadata=metadata)
+        assert mock_s3.upload_file.call_args[1]["ExtraArgs"] == {"Metadata": metadata}
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_processed_to_s3(metadata=metadata)
+        assert mock_s3.upload_file.call_args_list[0][1]["ExtraArgs"] == {"Metadata": metadata}
+        assert mock_s3.upload_file.call_args_list[1][1]["ExtraArgs"] == {"Metadata": metadata}
+
+
+def test_main_propagates_same_run_id_and_ingested_at_to_both_s3_uploads(monkeypatch):
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
+
+    with patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}), \
+         patch("nasa_asteroids.save_raw_json"), \
+         patch("nasa_asteroids.extract_asteroids", return_value=(valid_record, 0, 1)), \
+         patch("nasa_asteroids.save_to_csv"), \
+         patch("nasa_asteroids.save_to_parquet"), \
+         patch("nasa_asteroids.load_data"), \
+         patch("nasa_asteroids.upload_raw_to_s3") as mock_upload_raw, \
+         patch("nasa_asteroids.upload_processed_to_s3") as mock_upload_proc:
+
+        exit_code = nasa_asteroids.main()
+
+        assert exit_code == 0
+        raw_metadata = mock_upload_raw.call_args[1]["metadata"]
+        proc_metadata = mock_upload_proc.call_args[1]["metadata"]
+
+        assert raw_metadata == proc_metadata
+        assert "run_id" in raw_metadata
+        assert len(raw_metadata["run_id"]) == 12
+        assert "ingested_at" in raw_metadata
+        assert raw_metadata["source"] == "nasa_neows_api"
+
+
+def test_rejection_percentage_warning_emitted_when_over_20_percent(monkeypatch, caplog):
+    import logging
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+
+    valid_records = [
+        {"id": str(i), "name": f"A{i}", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}
+        for i in range(4)
+    ]
+
+    with patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}), \
+         patch("nasa_asteroids.save_raw_json"), \
+         patch("nasa_asteroids.extract_asteroids", return_value=(valid_records, 2, 6)), \
+         patch("nasa_asteroids.save_to_csv"), \
+         patch("nasa_asteroids.save_to_parquet"), \
+         patch("nasa_asteroids.load_data"), \
+         patch("nasa_asteroids.upload_raw_to_s3"), \
+         patch("nasa_asteroids.upload_processed_to_s3"):
+
+        with caplog.at_level(logging.WARNING):
+            exit_code = nasa_asteroids.main()
+
+        assert exit_code == 0
+        assert any("High rejection rate" in record.message for record in caplog.records)
