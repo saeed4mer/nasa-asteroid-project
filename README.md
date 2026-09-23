@@ -2,7 +2,7 @@
 
 A data engineering project that ingests Near-Earth Object (NEO) data from NASA's NeoWs API, validates and transforms it with Python, stores it locally and in Amazon S3, prepares analytics-ready Parquet data for Amazon Athena, and presents asteroid intelligence through an interactive Streamlit dashboard.
 
-![Tests](https://img.shields.io/badge/tests-54%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-56%20passed-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.x-blue)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-informational)
 
@@ -17,6 +17,7 @@ A data engineering project that ingests Near-Earth Object (NEO) data from NASA's
 - [SQL Analytics](#sql-analytics)
 - [Testing](#testing)
 - [Continuous Integration](#continuous-integration)
+- [Production Scheduling](#production-scheduling)
 - [Project Structure](#project-structure)
 - [Tech Stack](#tech-stack)
 - [Running the Project](#running-the-project)
@@ -289,7 +290,7 @@ The local SQLite layer provides an additional relational analytics environment f
 
 ## Testing
 
-The project uses `pytest`. The current suite contains **54 tests**, covering:
+The project uses `pytest`. The current suite contains **56 tests**, covering:
 
 - Valid asteroid extraction and data schema validation
 - Missing, empty, or malformed field handling
@@ -305,7 +306,7 @@ The project uses `pytest`. The current suite contains **54 tests**, covering:
 - Pipeline execution duration and observability logging
 - Mocked NASA API requests and S3 cloud storage
 
-**Current status:** ✅ 54 passed
+**Current status:** ✅ 56 passed
 
 Tests are designed to avoid making live NASA API requests.
 
@@ -321,6 +322,17 @@ The repository includes a GitHub Actions workflow at `.github/workflows/ci.yml` 
 4. Verifies whitespace and file formatting (`git diff --check`)
 5. Runs the Ruff linter (`ruff check . --select E4,E7,E9,F`)
 6. Runs the full pytest test suite (`pytest -v`)
+
+---
+
+## Production Scheduling
+
+Automated production execution is implemented via GitHub Actions in [`.github/workflows/scheduled_pipeline.yml`](.github/workflows/scheduled_pipeline.yml):
+
+- **Scheduled Ingestion:** Runs daily at `06:00 UTC` (`cron: "0 6 * * *"`), using the pipeline's standard rolling 7-day ingestion window (`date.today()` to `date.today() + 6 days`).
+- **Manual Ingestion & Backfills:** Supports `workflow_dispatch` with optional `start_date` and `end_date` inputs (`YYYY-MM-DD`). When both dates are provided, the workflow runs the pipeline for that specific historical date range; if either or both are omitted, execution defaults to the standard rolling date window.
+- **Secrets Management:** Pipeline credentials (`NASA_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) are injected securely through GitHub Actions Secrets into step environment variables and masked from logs.
+- **Concurrency & Failure Handling:** Concurrency group `nasa-asteroid-pipeline` with `cancel-in-progress: false` prevents overlapping runs while allowing active ingestions to complete. Any pipeline failure preserves Python's non-zero exit code (`sys.exit(1)`), failing the workflow run and alerting operators.
 
 ---
 
@@ -349,7 +361,8 @@ NASA-Intelligence-Platform/
 │
 ├── .github/
 │   └── workflows/
-│       └── ci.yml
+│       ├── ci.yml
+│       └── scheduled_pipeline.yml
 │
 └── README.md
 ```
@@ -453,6 +466,7 @@ streamlit run dashboard.py
 - Interactive Streamlit dashboard
 - Automated testing (pytest)
 - GitHub Actions CI
+- Automated scheduled pipeline execution (GitHub Actions)
 - Environment-based configuration
 - Architecture documentation
 
@@ -460,7 +474,6 @@ streamlit run dashboard.py
 
 - End-to-end cloud analytics validation
 - Further data-quality validation
-- Production-level orchestration and scheduling
 - Expanded intelligence metrics
 - Historical asteroid analysis
 - Final portfolio documentation
@@ -469,7 +482,6 @@ streamlit run dashboard.py
 
 ## Future Engineering Improvements
 
-- Pipeline orchestration and scheduling
 - Automated data-quality monitoring
 - Historical data accumulation, incremental processing, and backfills
 - Schema evolution handling
