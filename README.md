@@ -194,6 +194,46 @@ processed_csv/
 
 Raw API responses are kept outside version control.
 
+#### Storage Lifecycle & Retention Policy
+
+To optimize cloud storage costs while preserving analytical reproducibility, the platform defines the following S3 lifecycle and retention strategy:
+
+| Path Prefix | Storage Tier | Lifecycle & Retention Action | Rationale |
+|---|---|---|---|
+| `raw/` | S3 Standard → Glacier Instant Retrieval | Transition after **90 days**; expire after **365 days** | Raw JSON payloads (~70 KB/run) are retained for audit and re-parsing. Glacier Instant Retrieval provides millisecond access for replay, while annual expiration caps storage growth. |
+| `processed/` | S3 Standard | **Indefinite retention** (no transition, no expiration) | Processed Parquet files are the authoritative dataset for Amazon Athena analytics and require low-latency querying across all historical partitions. |
+| `processed_csv/` | S3 Standard | Expire after **14 days** | CSV exports serve as temporary operational inspection files; Athena analytics exclusively target Parquet. Expiring CSVs prevents redundant data accumulation. |
+| Legacy timestamped objects | S3 Standard | **Untouched** (no automated deletion) | Pre-M4 Phase 2C timestamped objects are preserved without automated deletion to prevent accidental data loss. |
+
+> **Note:** This represents the documented lifecycle/retention strategy for the platform. The configuration below is an example specification and is not applied to AWS resources in this phase.
+
+##### Example AWS S3 Lifecycle Configuration (`lifecycle.json`)
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "RawPayloadRetention",
+      "Filter": { "Prefix": "raw/" },
+      "Status": "Enabled",
+      "Transitions": [
+        {
+          "Days": 90,
+          "StorageClass": "GLACIER_IR"
+        }
+      ],
+      "Expiration": { "Days": 365 }
+    },
+    {
+      "ID": "ProcessedCsvExpiration",
+      "Filter": { "Prefix": "processed_csv/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 14 }
+    }
+  ]
+}
+```
+
 ### 9. Amazon Athena
 
 Processed Parquet data is designed for analytical querying through Amazon Athena. Prepared SQL analytics include:
