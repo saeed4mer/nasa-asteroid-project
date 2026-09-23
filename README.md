@@ -319,7 +319,7 @@ The repository includes a GitHub Actions workflow at `.github/workflows/ci.yml` 
 2. Sets up Python 3.11
 3. Installs project dependencies (`requirements.txt`)
 4. Verifies whitespace and file formatting (`git diff --check`)
-5. Runs the Ruff linter (`ruff check . --ignore F402`)
+5. Runs the Ruff linter (`ruff check . --select E4,E7,E9,F`)
 6. Runs the full pytest test suite (`pytest -v`)
 
 ---

@@ -12,7 +12,7 @@ SQLite
     ↓
 SQL Analytics
 
-## Target Cloud Architecture
+## Cloud Analytics Architecture (Implemented)
 
 NASA API
     ↓
