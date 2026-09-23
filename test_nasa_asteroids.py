@@ -264,6 +264,7 @@ def test_upload_raw_to_s3_mocked():
         call_args = mock_s3.upload_file.call_args[0]
         assert call_args[0] == "asteroids_raw.json"
         assert "raw/year=" in call_args[2]
+        assert call_args[2].endswith("/asteroids_raw.json")
 
 
 def test_upload_processed_to_s3_mocked():
@@ -280,6 +281,9 @@ def test_upload_processed_to_s3_mocked():
         uploaded_files = [call[0][0] for call in mock_s3.upload_file.call_args_list]
         assert "asteroids.parquet" in uploaded_files
         assert "asteroids.csv" in uploaded_files
+        uploaded_keys = [call[0][2] for call in mock_s3.upload_file.call_args_list]
+        assert uploaded_keys[0].endswith("/asteroids.parquet")
+        assert uploaded_keys[1].endswith("/asteroids.csv")
 
 
 def test_database_load_data_end_to_end(tmp_path):
@@ -713,3 +717,126 @@ def test_main_executes_local_pipeline_before_s3_failure(monkeypatch):
 
         assert call_order == ["save_raw", "save_csv", "save_parquet", "load_data"]
         mock_upload_proc.assert_not_called()
+
+
+def test_s3_daily_deterministic_key_generation():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    test_date = date(2026, 9, 23)
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_raw_to_s3(start_date=test_date)
+        raw_key = mock_s3.upload_file.call_args[0][2]
+        assert raw_key == "raw/year=2026/month=09/day=23/asteroids_raw.json"
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_processed_to_s3(start_date=test_date)
+        parquet_key = mock_s3.upload_file.call_args_list[0][0][2]
+        csv_key = mock_s3.upload_file.call_args_list[1][0][2]
+        assert parquet_key == "processed/year=2026/month=09/day=23/asteroids.parquet"
+        assert csv_key == "processed_csv/year=2026/month=09/day=23/asteroids.csv"
+
+
+def test_s3_custom_date_range_key_generation():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    custom_date = date(2026, 1, 1)
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_raw_to_s3(start_date=custom_date)
+        raw_key = mock_s3.upload_file.call_args[0][2]
+        assert raw_key == "raw/year=2026/month=01/day=01/asteroids_raw.json"
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_processed_to_s3(start_date=custom_date)
+        parquet_key = mock_s3.upload_file.call_args_list[0][0][2]
+        csv_key = mock_s3.upload_file.call_args_list[1][0][2]
+        assert parquet_key == "processed/year=2026/month=01/day=01/asteroids.parquet"
+        assert csv_key == "processed_csv/year=2026/month=01/day=01/asteroids.csv"
+
+
+def test_s3_same_start_date_produces_identical_keys():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    start_date = date(2026, 9, 23)
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_raw_to_s3(start_date=start_date)
+        nasa_asteroids.upload_processed_to_s3(start_date=start_date)
+        keys_first_call = [call[0][2] for call in mock_s3.upload_file.call_args_list]
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_raw_to_s3(start_date=start_date)
+        nasa_asteroids.upload_processed_to_s3(start_date=start_date)
+        keys_second_call = [call[0][2] for call in mock_s3.upload_file.call_args_list]
+
+    assert keys_first_call == keys_second_call
+    assert len(keys_first_call) == 3
+
+
+def test_s3_different_start_dates_produce_different_keys():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    date_jan = date(2026, 1, 1)
+    date_feb = date(2026, 2, 1)
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_processed_to_s3(start_date=date_jan)
+        key_jan = mock_s3.upload_file.call_args_list[0][0][2]
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_processed_to_s3(start_date=date_feb)
+        key_feb = mock_s3.upload_file.call_args_list[0][0][2]
+
+    assert key_jan != key_feb
+    assert "year=2026/month=01/day=01" in key_jan
+    assert "year=2026/month=02/day=01" in key_feb
+
+
+def test_s3_object_names_contain_no_timestamps():
+    from datetime import date
+    from unittest.mock import MagicMock, patch
+
+    test_date = date(2026, 9, 23)
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_asteroids.upload_raw_to_s3(start_date=test_date)
+        nasa_asteroids.upload_processed_to_s3(start_date=test_date)
+        keys = [call[0][2] for call in mock_s3.upload_file.call_args_list]
+
+    for key in keys:
+        filename = key.split("/")[-1]
+        assert filename in ["asteroids_raw.json", "asteroids.parquet", "asteroids.csv"]
+        # Ensure no timestamp suffix like _14-00-00 exists
+        assert not any(char.isdigit() for char in filename)

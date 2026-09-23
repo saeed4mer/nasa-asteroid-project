@@ -191,9 +191,18 @@ def save_raw_json(data, filename="asteroids_raw.json"):
     with open(filename, "w", encoding="utf-8") as file:
         json.dump(sanitized, file, indent=4)
 
-def upload_raw_to_s3():
+def upload_raw_to_s3(start_date=None):
+    if start_date is None:
+        start_date = date.today()
+    elif isinstance(start_date, str):
+        start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+    year = start_date.strftime("%Y")
+    month = start_date.strftime("%m")
+    day = start_date.strftime("%d")
+    s3_key = f"raw/year={year}/month={month}/day={day}/asteroids_raw.json"
+
     s3 = boto3.client("s3")
-    s3_key = f"raw/year={run_year}/month={run_month}/day={run_day}/asteroids_raw_{run_time}.json"
     try:
         s3.upload_file(
             "asteroids_raw.json",
@@ -210,9 +219,19 @@ def upload_raw_to_s3():
         )
         raise
 
-def upload_processed_to_s3():
+def upload_processed_to_s3(start_date=None):
+    if start_date is None:
+        start_date = date.today()
+    elif isinstance(start_date, str):
+        start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+    year = start_date.strftime("%Y")
+    month = start_date.strftime("%m")
+    day = start_date.strftime("%d")
+    parquet_key = f"processed/year={year}/month={month}/day={day}/asteroids.parquet"
+    csv_key = f"processed_csv/year={year}/month={month}/day={day}/asteroids.csv"
+
     s3 = boto3.client("s3")
-    parquet_key = f"processed/year={run_year}/month={run_month}/day={run_day}/asteroids_{run_time}.parquet"
     try:
         s3.upload_file(
             "asteroids.parquet",
@@ -229,7 +248,6 @@ def upload_processed_to_s3():
         )
         raise
 
-    csv_key = f"processed_csv/year={run_year}/month={run_month}/day={run_day}/asteroids_{run_time}.csv"
     try:
         s3.upload_file(
             "asteroids.csv",
@@ -347,10 +365,10 @@ def main(start_date_str=None, end_date_str=None):
     load_data(asteroid_data)
 
     logger.info("Uploading raw NASA response to S3")
-    upload_raw_to_s3()
+    upload_raw_to_s3(start_date=resolved_start)
 
     logger.info("Uploading processed data to S3")
-    upload_processed_to_s3()
+    upload_processed_to_s3(start_date=resolved_start)
     
 
     print()

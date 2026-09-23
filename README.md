@@ -160,7 +160,17 @@ The database loader is **idempotent**, preventing duplicate asteroid and close-a
 
 ### 8. Amazon S3
 
-The pipeline uploads data to S3 using run-based, date-partitioned paths.
+The pipeline uploads data to S3 using deterministic, date-partitioned paths based on the logical start date of the data window. S3 keys are deterministic, and repeated runs overwrite the same logical dataset atomically. This ensures cloud storage idempotency and prevents duplicate rows in Amazon Athena queries caused by repeated pipeline runs.
+
+Raw JSON data:
+
+```
+raw/
+└── year=YYYY/
+    └── month=MM/
+        └── day=DD/
+            └── asteroids_raw.json
+```
 
 Processed Parquet data:
 
@@ -169,7 +179,7 @@ processed/
 └── year=YYYY/
     └── month=MM/
         └── day=DD/
-            └── asteroids_<run-time>.parquet
+            └── asteroids.parquet
 ```
 
 Processed CSV data:
@@ -179,7 +189,7 @@ processed_csv/
 └── year=YYYY/
     └── month=MM/
         └── day=DD/
-            └── asteroids_<run-time>.csv
+            └── asteroids.csv
 ```
 
 Raw API responses are kept outside version control.
