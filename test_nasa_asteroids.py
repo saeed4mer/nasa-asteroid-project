@@ -840,3 +840,97 @@ def test_s3_object_names_contain_no_timestamps():
         assert filename in ["asteroids_raw.json", "asteroids.parquet", "asteroids.csv"]
         # Ensure no timestamp suffix like _14-00-00 exists
         assert not any(char.isdigit() for char in filename)
+
+
+def test_fetch_data_dynamic_today_defaults(monkeypatch):
+    import datetime
+    from unittest.mock import MagicMock, patch
+
+    class MockDate(datetime.date):
+        @classmethod
+        def today(cls):
+            return datetime.date(2026, 10, 15)
+
+    monkeypatch.setattr(nasa_asteroids, "date", MockDate)
+
+    with patch("nasa_asteroids.get_http_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"near_earth_objects": {}}
+        mock_response.raise_for_status.return_value = None
+        mock_session.get.return_value = mock_response
+        mock_get_session.return_value = mock_session
+
+        nasa_asteroids.fetch_data(key="TEST_KEY")
+
+        mock_session.get.assert_called_once()
+        params = mock_session.get.call_args[1]["params"]
+        assert params["start_date"] == "2026-10-15"
+        assert params["end_date"] == "2026-10-21"
+        assert params["api_key"] == "TEST_KEY"
+
+
+def test_fetch_data_start_only_calculates_end_date():
+    from unittest.mock import MagicMock, patch
+
+    with patch("nasa_asteroids.get_http_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"near_earth_objects": {}}
+        mock_response.raise_for_status.return_value = None
+        mock_session.get.return_value = mock_response
+        mock_get_session.return_value = mock_session
+
+        nasa_asteroids.fetch_data(start="2026-05-01", end=None, key="TEST_KEY")
+
+        mock_session.get.assert_called_once()
+        params = mock_session.get.call_args[1]["params"]
+        assert params["start_date"] == "2026-05-01"
+        assert params["end_date"] == "2026-05-07"
+        assert params["api_key"] == "TEST_KEY"
+
+
+def test_main_dynamic_date_evaluation_and_propagation(monkeypatch):
+    import datetime
+    from unittest.mock import patch
+
+    class MockDate(datetime.date):
+        @classmethod
+        def today(cls):
+            return datetime.date(2026, 11, 10)
+
+    monkeypatch.setattr(nasa_asteroids, "date", MockDate)
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+
+    with (
+        patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}) as mock_fetch,
+        patch("nasa_asteroids.save_raw_json"),
+        patch("nasa_asteroids.extract_asteroids", return_value=([], 0, 0)),
+        patch("nasa_asteroids.save_to_csv"),
+        patch("nasa_asteroids.save_to_parquet"),
+        patch("nasa_asteroids.load_data"),
+        patch("nasa_asteroids.upload_raw_to_s3") as mock_upload_raw,
+        patch("nasa_asteroids.upload_processed_to_s3") as mock_upload_proc,
+    ):
+        exit_code = nasa_asteroids.main()
+
+        assert exit_code == 0
+        expected_start = datetime.date(2026, 11, 10)
+        expected_end = datetime.date(2026, 11, 16)
+
+        mock_fetch.assert_called_once_with(
+            start=expected_start,
+            end=expected_end,
+            key="TEST_KEY"
+        )
+        mock_upload_raw.assert_called_once_with(start_date=expected_start)
+        mock_upload_proc.assert_called_once_with(start_date=expected_start)
+
+
+def test_old_module_level_date_variables_do_not_exist():
+    assert not hasattr(nasa_asteroids, "run_year")
+    assert not hasattr(nasa_asteroids, "run_month")
+    assert not hasattr(nasa_asteroids, "run_day")
+    assert not hasattr(nasa_asteroids, "run_time")
+    assert not hasattr(nasa_asteroids, "start_date")
+    assert not hasattr(nasa_asteroids, "end_date")

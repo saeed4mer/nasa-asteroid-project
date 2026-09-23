@@ -30,12 +30,6 @@ load_dotenv(dotenv_path=".env")
 
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "nasa-asteroid-intelligence")
 API_KEY = os.getenv("NASA_API_KEY")
-start_date = date.today()
-end_date = start_date + timedelta(days=6)
-run_year = date.today().strftime("%Y")
-run_month = date.today().strftime("%m")
-run_day = date.today().strftime("%d")
-run_time = datetime.now().strftime("%H-%M-%S")
 
 ASTEROID_SCHEMA = pa.schema([
     ("id", pa.string()),
@@ -64,8 +58,16 @@ def get_http_session(total_retries=3, backoff_factor=1):
 
 
 def fetch_data(start=None, end=None, key=None):
-    start = start or start_date
-    end = end or end_date
+    if start is None:
+        start = date.today()
+    elif isinstance(start, str):
+        start = datetime.strptime(start, "%Y-%m-%d").date()
+
+    if end is None:
+        end = start + timedelta(days=6)
+    elif isinstance(end, str):
+        end = datetime.strptime(end, "%Y-%m-%d").date()
+
     key = key or API_KEY
 
     start_str = start.strftime("%Y-%m-%d") if isinstance(start, (date, datetime)) else str(start)
