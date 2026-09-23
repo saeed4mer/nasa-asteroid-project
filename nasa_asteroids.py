@@ -479,6 +479,12 @@ if __name__ == "__main__":
             run_id_prefix,
             redact_api_key(str(error))
         )
+        if error.response is not None and getattr(error.response, "text", None):
+            logger.error(
+                "%sHTTP response body: %s",
+                run_id_prefix,
+                redact_api_key(error.response.text.strip())[:500]
+            )
         sys.exit(1)
 
     except requests.exceptions.RequestException as error:

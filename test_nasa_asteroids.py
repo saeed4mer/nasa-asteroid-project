@@ -556,6 +556,37 @@ def test_cli_exits_code_1_when_fetch_data_raises_http_error(tmp_path):
     assert "NASA API returned an HTTP error" in result.stderr
 
 
+def test_cli_exits_code_1_and_logs_response_body_on_http_error(tmp_path):
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    target_script = os.path.join(repo_dir, "nasa_asteroids.py")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = repo_dir
+
+    script = (
+        "from unittest.mock import MagicMock, patch\n"
+        "import requests, runpy\n"
+        "mock_resp = MagicMock()\n"
+        "mock_resp.text = '{\"error\": {\"code\": \"API_KEY_INVALID\", \"url\": \"https://api.nasa.gov/?api_key=SECRET_BODY_KEY\"}}'\n"
+        "err = requests.exceptions.HTTPError('403 Forbidden', response=mock_resp)\n"
+        "with patch('requests.Session.get', side_effect=err):\n"
+        "    with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
+        f"        runpy.run_path(r'{target_script}', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 1
+    assert "NASA API returned an HTTP error" in result.stderr
+    assert "HTTP response body:" in result.stderr
+    assert "API_KEY_INVALID" in result.stderr
+    assert "SECRET_BODY_KEY" not in result.stderr
+    assert "api_key=REDACTED" in result.stderr
+
+
 def test_cli_exits_code_1_when_fetch_data_raises_request_exception(tmp_path):
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     target_script = os.path.join(repo_dir, "nasa_asteroids.py")
