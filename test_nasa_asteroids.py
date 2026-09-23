@@ -1,3 +1,20 @@
+import datetime
+import json
+import logging
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+from datetime import date
+from unittest.mock import MagicMock, patch
+
+import pyarrow.parquet as pq
+import pytest
+import requests
+from botocore.exceptions import ClientError
+
+import database
 import nasa_asteroids
 def test_extract_asteroids():
     fake_data = {
@@ -209,8 +226,6 @@ def test_extract_multiple_asteroids():
 
 
 def test_save_to_parquet(tmp_path):
-    import pyarrow.parquet as pq
-
     test_file = tmp_path / "test_asteroids.parquet"
     test_data = [
         {
@@ -231,8 +246,6 @@ def test_save_to_parquet(tmp_path):
 
 
 def test_fetch_data_mocked():
-    from unittest.mock import MagicMock, patch
-
     mock_payload = {
         "element_count": 1,
         "near_earth_objects": {}
@@ -251,8 +264,6 @@ def test_fetch_data_mocked():
 
 
 def test_upload_raw_to_s3_mocked():
-    from unittest.mock import MagicMock, patch
-
     with patch("boto3.client") as mock_boto:
         mock_s3 = MagicMock()
         mock_boto.return_value = mock_s3
@@ -268,8 +279,6 @@ def test_upload_raw_to_s3_mocked():
 
 
 def test_upload_processed_to_s3_mocked():
-    from unittest.mock import MagicMock, patch
-
     with patch("boto3.client") as mock_boto:
         mock_s3 = MagicMock()
         mock_boto.return_value = mock_s3
@@ -287,9 +296,6 @@ def test_upload_processed_to_s3_mocked():
 
 
 def test_database_load_data_end_to_end(tmp_path):
-    import sqlite3
-    import database
-
     db_file = str(tmp_path / "test_asteroids.db")
     test_records = [
         {
@@ -317,9 +323,6 @@ def test_database_load_data_end_to_end(tmp_path):
 
 
 def test_database_load_data_is_idempotent(tmp_path):
-    import sqlite3
-    import database
-
     db_file = str(tmp_path / "test_idempotent.db")
     test_records = [
         {
@@ -385,8 +388,6 @@ def test_redact_api_key_query_params():
 
 
 def test_sanitize_raw_data_top_level_and_asteroid_links():
-    import json
-
     raw_payload = {
         "links": {
             "next": "http://api.nasa.gov/neo/rest/v1/feed?start_date=2026-09-28&api_key=SECRET_KEY_123",
@@ -457,8 +458,6 @@ def test_sanitize_raw_data_top_level_and_asteroid_links():
 
 
 def test_save_raw_json_produces_file_without_secret(tmp_path):
-    import json
-
     test_file = tmp_path / "test_raw.json"
     raw_payload = {
         "links": {
@@ -498,8 +497,6 @@ def test_save_raw_json_produces_file_without_secret(tmp_path):
 
 
 def test_http_error_redaction():
-    import requests
-
     error_url = (
         "https://api.nasa.gov/neo/rest/v1/feed"
         "?start_date=2026-09-01&api_key=VERY_SECRET_KEY&end_date=2026-09-07"
@@ -536,10 +533,6 @@ def test_main_returns_1_when_end_date_precedes_start_date(monkeypatch):
 
 
 def test_cli_exits_code_1_when_fetch_data_raises_http_error(tmp_path):
-    import os
-    import subprocess
-    import sys
-
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     target_script = os.path.join(repo_dir, "nasa_asteroids.py")
     env = os.environ.copy()
@@ -564,10 +557,6 @@ def test_cli_exits_code_1_when_fetch_data_raises_http_error(tmp_path):
 
 
 def test_cli_exits_code_1_when_fetch_data_raises_request_exception(tmp_path):
-    import os
-    import subprocess
-    import sys
-
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     target_script = os.path.join(repo_dir, "nasa_asteroids.py")
     env = os.environ.copy()
@@ -595,10 +584,6 @@ def test_cli_exits_code_1_when_fetch_data_raises_request_exception(tmp_path):
 
 
 def test_cli_exits_code_1_when_unexpected_pipeline_exception_occurs(tmp_path):
-    import os
-    import subprocess
-    import sys
-
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     target_script = os.path.join(repo_dir, "nasa_asteroids.py")
     env = os.environ.copy()
@@ -628,8 +613,6 @@ def test_cli_exits_code_1_when_unexpected_pipeline_exception_occurs(tmp_path):
 
 
 def test_main_success_returns_0(monkeypatch):
-    from unittest.mock import patch
-
     fake_data = {
         "near_earth_objects": {
             "2026-09-20": [
@@ -672,10 +655,6 @@ def test_main_success_returns_0(monkeypatch):
 
 
 def test_upload_raw_to_s3_handles_client_error():
-    from unittest.mock import MagicMock, patch
-    import pytest
-    from botocore.exceptions import ClientError
-
     client_error = ClientError({"Error": {"Code": "403", "Message": "AccessDenied"}}, "PutObject")
     with patch("boto3.client") as mock_boto:
         mock_s3 = MagicMock()
@@ -690,10 +669,6 @@ def test_upload_raw_to_s3_handles_client_error():
 
 
 def test_upload_processed_to_s3_handles_client_error():
-    from unittest.mock import MagicMock, patch
-    import pytest
-    from botocore.exceptions import ClientError
-
     client_error = ClientError({"Error": {"Code": "500", "Message": "InternalError"}}, "PutObject")
     with patch("boto3.client") as mock_boto:
         mock_s3 = MagicMock()
@@ -709,10 +684,6 @@ def test_upload_processed_to_s3_handles_client_error():
 
 
 def test_upload_processed_to_s3_handles_partial_failure():
-    from unittest.mock import MagicMock, patch
-    import pytest
-    from botocore.exceptions import ClientError
-
     client_error = ClientError({"Error": {"Code": "404", "Message": "NoSuchBucket"}}, "PutObject")
     with patch("boto3.client") as mock_boto:
         mock_s3 = MagicMock()
@@ -730,10 +701,6 @@ def test_upload_processed_to_s3_handles_partial_failure():
 
 
 def test_main_exits_code_1_on_s3_failure(tmp_path):
-    import os
-    import subprocess
-    import sys
-
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     target_script = os.path.join(repo_dir, "nasa_asteroids.py")
     env = os.environ.copy()
@@ -767,10 +734,6 @@ def test_main_exits_code_1_on_s3_failure(tmp_path):
 
 
 def test_main_executes_local_pipeline_before_s3_failure(monkeypatch):
-    from unittest.mock import patch
-    import pytest
-    from botocore.exceptions import ClientError
-
     fake_data = {"near_earth_objects": {}}
     call_order = []
 
@@ -796,9 +759,6 @@ def test_main_executes_local_pipeline_before_s3_failure(monkeypatch):
 
 
 def test_s3_daily_deterministic_key_generation():
-    from datetime import date
-    from unittest.mock import MagicMock, patch
-
     test_date = date(2026, 9, 23)
 
     with patch("boto3.client") as mock_boto:
@@ -821,9 +781,6 @@ def test_s3_daily_deterministic_key_generation():
 
 
 def test_s3_custom_date_range_key_generation():
-    from datetime import date
-    from unittest.mock import MagicMock, patch
-
     custom_date = date(2026, 1, 1)
 
     with patch("boto3.client") as mock_boto:
@@ -846,9 +803,6 @@ def test_s3_custom_date_range_key_generation():
 
 
 def test_s3_same_start_date_produces_identical_keys():
-    from datetime import date
-    from unittest.mock import MagicMock, patch
-
     start_date = date(2026, 9, 23)
 
     with patch("boto3.client") as mock_boto:
@@ -872,9 +826,6 @@ def test_s3_same_start_date_produces_identical_keys():
 
 
 def test_s3_different_start_dates_produce_different_keys():
-    from datetime import date
-    from unittest.mock import MagicMock, patch
-
     date_jan = date(2026, 1, 1)
     date_feb = date(2026, 2, 1)
 
@@ -898,9 +849,6 @@ def test_s3_different_start_dates_produce_different_keys():
 
 
 def test_s3_object_names_contain_no_timestamps():
-    from datetime import date
-    from unittest.mock import MagicMock, patch
-
     test_date = date(2026, 9, 23)
 
     with patch("boto3.client") as mock_boto:
@@ -919,9 +867,6 @@ def test_s3_object_names_contain_no_timestamps():
 
 
 def test_fetch_data_dynamic_today_defaults(monkeypatch):
-    import datetime
-    from unittest.mock import MagicMock, patch
-
     class MockDate(datetime.date):
         @classmethod
         def today(cls):
@@ -947,8 +892,6 @@ def test_fetch_data_dynamic_today_defaults(monkeypatch):
 
 
 def test_fetch_data_start_only_calculates_end_date():
-    from unittest.mock import MagicMock, patch
-
     with patch("nasa_asteroids.get_http_session") as mock_get_session:
         mock_session = MagicMock()
         mock_response = MagicMock()
@@ -967,9 +910,6 @@ def test_fetch_data_start_only_calculates_end_date():
 
 
 def test_main_dynamic_date_evaluation_and_propagation(monkeypatch):
-    import datetime
-    from unittest.mock import patch
-
     class MockDate(datetime.date):
         @classmethod
         def today(cls):
@@ -1176,8 +1116,6 @@ def test_extract_asteroids_deduplicates_identical_approaches():
 
 
 def test_main_zero_valid_records_returns_code_1(monkeypatch):
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     invalid_data = {
         "near_earth_objects": {
@@ -1203,8 +1141,6 @@ def test_main_zero_valid_records_returns_code_1(monkeypatch):
 
 
 def test_main_empty_nasa_response_triggers_circuit_breaker(monkeypatch):
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     empty_data = {"near_earth_objects": {}}
 
@@ -1215,8 +1151,6 @@ def test_main_empty_nasa_response_triggers_circuit_breaker(monkeypatch):
 
 
 def test_circuit_breaker_prevents_processed_files_and_s3_uploads(monkeypatch):
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
 
     with patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}), \
@@ -1239,8 +1173,6 @@ def test_circuit_breaker_prevents_processed_files_and_s3_uploads(monkeypatch):
 
 
 def test_s3_upload_functions_receive_expected_lineage_metadata():
-    from unittest.mock import MagicMock, patch
-
     metadata = {
         "run_id": "test_run_123",
         "ingested_at": "2026-09-23T12:00:00+00:00",
@@ -1264,8 +1196,6 @@ def test_s3_upload_functions_receive_expected_lineage_metadata():
 
 
 def test_main_propagates_same_run_id_and_ingested_at_to_both_s3_uploads(monkeypatch):
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
 
@@ -1292,9 +1222,6 @@ def test_main_propagates_same_run_id_and_ingested_at_to_both_s3_uploads(monkeypa
 
 
 def test_rejection_percentage_warning_emitted_when_over_20_percent(monkeypatch, caplog):
-    import logging
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
 
     valid_records = [
@@ -1319,9 +1246,6 @@ def test_rejection_percentage_warning_emitted_when_over_20_percent(monkeypatch, 
 
 
 def test_main_logs_run_id_and_ingested_at_at_startup(monkeypatch, caplog):
-    import logging
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
 
@@ -1347,10 +1271,6 @@ def test_main_logs_run_id_and_ingested_at_at_startup(monkeypatch, caplog):
 
 
 def test_main_logs_elapsed_duration_at_completion(monkeypatch, caplog):
-    import logging
-    import re
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
 
@@ -1374,9 +1294,6 @@ def test_main_logs_elapsed_duration_at_completion(monkeypatch, caplog):
 
 
 def test_main_logs_sqlite_loading(monkeypatch, caplog):
-    import logging
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
 
@@ -1399,9 +1316,6 @@ def test_main_logs_sqlite_loading(monkeypatch, caplog):
 
 
 def test_main_logs_api_success_immediately_after_fetch(monkeypatch, caplog):
-    import logging
-    from unittest.mock import patch
-
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
 
@@ -1426,11 +1340,6 @@ def test_main_logs_api_success_immediately_after_fetch(monkeypatch, caplog):
 
 
 def test_top_level_error_logging_includes_run_id(tmp_path):
-    import os
-    import re
-    import subprocess
-    import sys
-
     repo_dir = os.path.dirname(os.path.abspath(__file__))
     target_script = os.path.join(repo_dir, "nasa_asteroids.py")
     env = os.environ.copy()
