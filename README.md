@@ -2,7 +2,7 @@
 
 A data engineering project that ingests Near-Earth Object (NEO) data from NASA's NeoWs API, validates and transforms it with Python, stores it locally and in Amazon S3, prepares analytics-ready Parquet data for Amazon Athena, and presents asteroid intelligence through an interactive Streamlit dashboard.
 
-![Tests](https://img.shields.io/badge/tests-12%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-54%20passed-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.x-blue)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-informational)
 
@@ -249,22 +249,23 @@ The local SQLite layer provides an additional relational analytics environment f
 
 ## Testing
 
-The project uses `pytest`. The current suite contains **12 tests**, covering:
+The project uses `pytest`. The current suite contains **54 tests**, covering:
 
-- Valid asteroid extraction
-- Missing asteroid names
-- Missing close-approach data
-- Missing miss-distance data
-- Missing kilometer values
-- Extracted field correctness
-- Multiple asteroid records
-- Parquet generation
-- Mocked NASA API requests
-- Mocked S3 uploads
-- Database integration
-- Database loading behavior
+- Valid asteroid extraction and data schema validation
+- Missing, empty, or malformed field handling
+- Date validation, range boundaries, and runtime dynamic dates
+- Deduplication of identical asteroid approaches
+- Data quality metrics, rejection rate warnings, and circuit breakers
+- Parquet and CSV generation with explicit typing
+- Relational database loading and idempotency
+- API key redaction and sanitized raw payload storage
+- CLI exit codes, error propagation, and unhandled exceptions
+- S3 deterministic Hive partitioning and idempotent keys
+- S3 partial failure handling and local-first sequencing
+- Pipeline execution duration and observability logging
+- Mocked NASA API requests and S3 cloud storage
 
-**Current status:** ✅ 12 passed
+**Current status:** ✅ 54 passed
 
 Tests are designed to avoid making live NASA API requests.
 
@@ -275,9 +276,11 @@ Tests are designed to avoid making live NASA API requests.
 The repository includes a GitHub Actions workflow at `.github/workflows/ci.yml` that:
 
 1. Checks out the repository
-2. Sets up Python
-3. Installs project dependencies
-4. Runs the pytest suite
+2. Sets up Python 3.11
+3. Installs project dependencies (`requirements.txt`)
+4. Verifies whitespace and file formatting (`git diff --check`)
+5. Runs the Ruff linter (`ruff check . --ignore F402`)
+6. Runs the full pytest test suite (`pytest -v`)
 
 ---
 

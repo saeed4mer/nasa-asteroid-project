@@ -316,6 +316,38 @@ def test_database_load_data_end_to_end(tmp_path):
         assert approach == ("999", "2026-09-22", 500000.0)
 
 
+def test_database_load_data_is_idempotent(tmp_path):
+    import sqlite3
+    import database
+
+    db_file = str(tmp_path / "test_idempotent.db")
+    test_records = [
+        {
+            "id": "1001",
+            "name": "Idempotent Asteroid",
+            "closest_approach_date": "2026-09-22",
+            "miss_distance_km": 300000.0,
+            "hazardous": True
+        }
+    ]
+
+    # First load
+    database.load_data(test_records, db_path=db_file)
+
+    # Second load with identical records
+    database.load_data(test_records, db_path=db_file)
+
+    with sqlite3.connect(db_file) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM asteroids WHERE asteroid_id = '1001'")
+        assert cursor.fetchone()[0] == 1
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM close_approaches WHERE asteroid_id = '1001' AND approach_date = '2026-09-22'"
+        )
+        assert cursor.fetchone()[0] == 1
+
+
 def test_redact_api_key_query_params():
     # Only api_key parameter
     url_single = "http://api.nasa.gov/neo/rest/v1/feed?api_key=SECRET_API_KEY"
@@ -503,24 +535,63 @@ def test_main_returns_1_when_end_date_precedes_start_date(monkeypatch):
     assert exit_code == 1
 
 
-def test_cli_exits_code_1_when_fetch_data_raises_http_error():
+def test_cli_exits_code_1_when_fetch_data_raises_http_error(tmp_path):
+    import os
     import subprocess
     import sys
+
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    target_script = os.path.join(repo_dir, "nasa_asteroids.py")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = repo_dir
 
     script = (
         "from unittest.mock import patch\n"
         "import requests, runpy\n"
         "with patch('requests.Session.get', side_effect=requests.exceptions.HTTPError('403 Forbidden')):\n"
         "    with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
-        "        runpy.run_path('nasa_asteroids.py', run_name='__main__')\n"
+        f"        runpy.run_path(r'{target_script}', run_name='__main__')\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        env=env,
         capture_output=True,
         text=True
     )
     assert result.returncode == 1
     assert "NASA API returned an HTTP error" in result.stderr
+
+
+def test_cli_exits_code_1_when_fetch_data_raises_request_exception(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    target_script = os.path.join(repo_dir, "nasa_asteroids.py")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = repo_dir
+
+    script = (
+        "from unittest.mock import patch\n"
+        "import requests, runpy\n"
+        "conn_err = requests.exceptions.ConnectionError('Connection refused: https://api.nasa.gov/neo/rest/v1/feed?api_key=SECRET_NETWORK_KEY')\n"
+        "with patch('requests.Session.get', side_effect=conn_err):\n"
+        "    with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
+        f"        runpy.run_path(r'{target_script}', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 1
+    assert "Network error:" in result.stderr
+    assert "SECRET_NETWORK_KEY" not in result.stderr
+    assert "api_key=REDACTED" in result.stderr
 
 
 def test_cli_exits_code_1_when_unexpected_pipeline_exception_occurs(tmp_path):
