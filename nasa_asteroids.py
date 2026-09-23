@@ -9,6 +9,7 @@ import sys
 from datetime import date, datetime, timedelta
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
@@ -193,30 +194,59 @@ def save_raw_json(data, filename="asteroids_raw.json"):
 def upload_raw_to_s3():
     s3 = boto3.client("s3")
     s3_key = f"raw/year={run_year}/month={run_month}/day={run_day}/asteroids_raw_{run_time}.json"
-    s3.upload_file(
-        "asteroids_raw.json",
-        S3_BUCKET_NAME,
-        s3_key
-    )
-    logger.info("Uploaded raw JSON to s3://%s/%s", S3_BUCKET_NAME, s3_key)
+    try:
+        s3.upload_file(
+            "asteroids_raw.json",
+            S3_BUCKET_NAME,
+            s3_key
+        )
+        logger.info("Uploaded raw JSON to s3://%s/%s", S3_BUCKET_NAME, s3_key)
+    except (BotoCoreError, ClientError) as error:
+        logger.error(
+            "Raw S3 upload failed for s3://%s/%s: %s",
+            S3_BUCKET_NAME,
+            s3_key,
+            redact_api_key(str(error))
+        )
+        raise
 
 def upload_processed_to_s3():
     s3 = boto3.client("s3")
     parquet_key = f"processed/year={run_year}/month={run_month}/day={run_day}/asteroids_{run_time}.parquet"
-    s3.upload_file(
-        "asteroids.parquet",
-        S3_BUCKET_NAME,
-        parquet_key
-    )
-    logger.info("Uploaded processed Parquet to s3://%s/%s", S3_BUCKET_NAME, parquet_key)
+    try:
+        s3.upload_file(
+            "asteroids.parquet",
+            S3_BUCKET_NAME,
+            parquet_key
+        )
+        logger.info("Uploaded processed Parquet to s3://%s/%s", S3_BUCKET_NAME, parquet_key)
+    except (BotoCoreError, ClientError) as error:
+        logger.error(
+            "Processed Parquet S3 upload failed for s3://%s/%s: %s",
+            S3_BUCKET_NAME,
+            parquet_key,
+            redact_api_key(str(error))
+        )
+        raise
 
     csv_key = f"processed_csv/year={run_year}/month={run_month}/day={run_day}/asteroids_{run_time}.csv"
-    s3.upload_file(
-        "asteroids.csv",
-        S3_BUCKET_NAME,
-        csv_key
-    )
-    logger.info("Uploaded processed CSV to s3://%s/%s", S3_BUCKET_NAME, csv_key)
+    try:
+        s3.upload_file(
+            "asteroids.csv",
+            S3_BUCKET_NAME,
+            csv_key
+        )
+        logger.info("Uploaded processed CSV to s3://%s/%s", S3_BUCKET_NAME, csv_key)
+    except (BotoCoreError, ClientError) as error:
+        logger.error(
+            "Processed CSV S3 upload failed for s3://%s/%s (Parquet upload already succeeded at s3://%s/%s): %s",
+            S3_BUCKET_NAME,
+            csv_key,
+            S3_BUCKET_NAME,
+            parquet_key,
+            redact_api_key(str(error))
+        )
+        raise
 
 def save_to_parquet(asteroid_data, filename="asteroids.parquet"):
     table = pa.Table.from_pylist(asteroid_data, schema=ASTEROID_SCHEMA)
@@ -304,7 +334,6 @@ def main(start_date_str=None, end_date_str=None):
 
     logger.info("Saving raw NASA response")
     save_raw_json(data)
-    upload_raw_to_s3()
 
     logger.info("Extracting and validating asteroid data")
 
@@ -315,10 +344,13 @@ def main(start_date_str=None, end_date_str=None):
     save_to_csv(asteroid_data)
     save_to_parquet(asteroid_data)
 
+    load_data(asteroid_data)
+
+    logger.info("Uploading raw NASA response to S3")
+    upload_raw_to_s3()
+
     logger.info("Uploading processed data to S3")
     upload_processed_to_s3()
-
-    load_data(asteroid_data)
     
 
     print()

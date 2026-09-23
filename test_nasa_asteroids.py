@@ -519,22 +519,30 @@ def test_cli_exits_code_1_when_fetch_data_raises_http_error():
     assert "NASA API returned an HTTP error" in result.stderr
 
 
-def test_cli_exits_code_1_when_unexpected_pipeline_exception_occurs():
+def test_cli_exits_code_1_when_unexpected_pipeline_exception_occurs(tmp_path):
+    import os
     import subprocess
     import sys
 
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    target_script = os.path.join(repo_dir, "nasa_asteroids.py")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = repo_dir
+
     script = (
         "from unittest.mock import patch\n"
-        "import runpy\n"
+        "import os, runpy\n"
         "with patch('requests.Session.get') as mock_get:\n"
         "    mock_get.return_value.json.return_value = {'near_earth_objects': {}}\n"
         "    mock_get.return_value.raise_for_status.return_value = None\n"
         "    with patch('boto3.client', side_effect=RuntimeError('Unexpected AWS error')):\n"
         "        with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
-        "            runpy.run_path('nasa_asteroids.py', run_name='__main__')\n"
+        f"            runpy.run_path(r'{target_script}', run_name='__main__')\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        env=env,
         capture_output=True,
         text=True
     )
@@ -584,3 +592,124 @@ def test_main_success_returns_0(monkeypatch):
         mock_save_parquet.assert_called_once()
         mock_upload_proc.assert_called_once()
         mock_load_data.assert_called_once()
+
+
+def test_upload_raw_to_s3_handles_client_error():
+    from unittest.mock import MagicMock, patch
+    import pytest
+    from botocore.exceptions import ClientError
+
+    client_error = ClientError({"Error": {"Code": "403", "Message": "AccessDenied"}}, "PutObject")
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_s3.upload_file.side_effect = client_error
+        mock_boto.return_value = mock_s3
+
+        with pytest.raises(ClientError) as exc_info:
+            nasa_asteroids.upload_raw_to_s3()
+
+        assert exc_info.value == client_error
+        mock_s3.upload_file.assert_called_once()
+
+
+def test_upload_processed_to_s3_handles_client_error():
+    from unittest.mock import MagicMock, patch
+    import pytest
+    from botocore.exceptions import ClientError
+
+    client_error = ClientError({"Error": {"Code": "500", "Message": "InternalError"}}, "PutObject")
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_s3.upload_file.side_effect = client_error
+        mock_boto.return_value = mock_s3
+
+        with pytest.raises(ClientError) as exc_info:
+            nasa_asteroids.upload_processed_to_s3()
+
+        assert exc_info.value == client_error
+        assert mock_s3.upload_file.call_count == 1
+        assert mock_s3.upload_file.call_args[0][0] == "asteroids.parquet"
+
+
+def test_upload_processed_to_s3_handles_partial_failure():
+    from unittest.mock import MagicMock, patch
+    import pytest
+    from botocore.exceptions import ClientError
+
+    client_error = ClientError({"Error": {"Code": "404", "Message": "NoSuchBucket"}}, "PutObject")
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        # Parquet succeeds (None), CSV fails (ClientError)
+        mock_s3.upload_file.side_effect = [None, client_error]
+        mock_boto.return_value = mock_s3
+
+        with pytest.raises(ClientError) as exc_info:
+            nasa_asteroids.upload_processed_to_s3()
+
+        assert exc_info.value == client_error
+        assert mock_s3.upload_file.call_count == 2
+        calls = [c[0][0] for c in mock_s3.upload_file.call_args_list]
+        assert calls == ["asteroids.parquet", "asteroids.csv"]
+
+
+def test_main_exits_code_1_on_s3_failure(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    target_script = os.path.join(repo_dir, "nasa_asteroids.py")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = repo_dir
+
+    script = (
+        "from unittest.mock import patch, MagicMock\n"
+        "import os, runpy\n"
+        "from botocore.exceptions import ClientError\n"
+        "err = ClientError({'Error': {'Code': '403', 'Message': 'AccessDenied'}}, 'PutObject')\n"
+        "with patch('requests.Session.get') as mock_get:\n"
+        "    mock_get.return_value.json.return_value = {'near_earth_objects': {}}\n"
+        "    mock_get.return_value.raise_for_status.return_value = None\n"
+        "    with patch('boto3.client') as mock_boto:\n"
+        "        mock_s3 = MagicMock()\n"
+        "        mock_s3.upload_file.side_effect = err\n"
+        "        mock_boto.return_value = mock_s3\n"
+        "        with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
+        f"            runpy.run_path(r'{target_script}', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 1
+    assert "Raw S3 upload failed" in result.stderr or "Pipeline failure" in result.stderr
+
+
+def test_main_executes_local_pipeline_before_s3_failure(monkeypatch):
+    from unittest.mock import patch
+    import pytest
+    from botocore.exceptions import ClientError
+
+    fake_data = {"near_earth_objects": {}}
+    call_order = []
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    client_error = ClientError({"Error": {"Code": "500", "Message": "S3Unavailable"}}, "PutObject")
+
+    with patch("nasa_asteroids.fetch_data", return_value=fake_data), \
+         patch("nasa_asteroids.save_raw_json", side_effect=lambda *a, **kw: call_order.append("save_raw")), \
+         patch("nasa_asteroids.extract_asteroids", return_value=([], 0, 0)), \
+         patch("nasa_asteroids.save_to_csv", side_effect=lambda *a, **kw: call_order.append("save_csv")), \
+         patch("nasa_asteroids.save_to_parquet", side_effect=lambda *a, **kw: call_order.append("save_parquet")), \
+         patch("nasa_asteroids.load_data", side_effect=lambda *a, **kw: call_order.append("load_data")), \
+         patch("nasa_asteroids.upload_raw_to_s3", side_effect=client_error), \
+         patch("nasa_asteroids.upload_processed_to_s3") as mock_upload_proc:
+
+        with pytest.raises(ClientError):
+            nasa_asteroids.main()
+
+        assert call_order == ["save_raw", "save_csv", "save_parquet", "load_data"]
+        mock_upload_proc.assert_not_called()
