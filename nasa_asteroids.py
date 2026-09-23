@@ -100,7 +100,7 @@ def extract_asteroids(data):
     skipped_records = 0
     records_received = 0
 
-    for date, asteroid_list in asteroids.items():
+    for date_str, asteroid_list in asteroids.items():
         for asteroid in asteroid_list:
             records_received += 1
 
@@ -310,8 +310,8 @@ def save_to_parquet(asteroid_data, filename="asteroids.parquet"):
     table = pa.Table.from_pylist(asteroid_data, schema=ASTEROID_SCHEMA)
     pq.write_table(table, filename, compression="snappy")
 
-def save_to_csv(asteroid_data):
-    with open("asteroids.csv", "w", newline="", encoding="utf-8") as file:
+def save_to_csv(asteroid_data, filename="asteroids.csv"):
+    with open(filename, "w", newline="", encoding="utf-8") as file:
 
         fieldnames = [
     "id",
