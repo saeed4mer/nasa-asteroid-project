@@ -603,6 +603,7 @@ def test_cli_exits_code_1_when_unexpected_pipeline_exception_occurs(tmp_path):
     target_script = os.path.join(repo_dir, "nasa_asteroids.py")
     env = os.environ.copy()
     env["PYTHONPATH"] = repo_dir
+    env["DB_PATH"] = str(tmp_path / "subprocess.db")
 
     script = (
         "from unittest.mock import patch\n"
@@ -1434,6 +1435,7 @@ def test_top_level_error_logging_includes_run_id(tmp_path):
     target_script = os.path.join(repo_dir, "nasa_asteroids.py")
     env = os.environ.copy()
     env["PYTHONPATH"] = repo_dir
+    env["DB_PATH"] = str(tmp_path / "subprocess.db")
 
     script = (
         "from unittest.mock import patch\n"

@@ -38,6 +38,5 @@ jobs:
         env:
           NASA_API_KEY: "DEMO_KEY"
           S3_BUCKET_NAME: "test-bucket"
-          DB_PATH: ":memory:"
         run: |
           pytest -v
