@@ -524,6 +524,46 @@ def test_main_returns_1_for_invalid_date_input(monkeypatch):
     monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
     assert nasa_asteroids.main(start_date_str="2026-99-99") == 1
     assert nasa_asteroids.main(start_date_str="2026-09-01", end_date_str="invalid-date") == 1
+    assert nasa_asteroids.main(start_date_str="2026-02-30") == 1
+    assert nasa_asteroids.main(start_date_str="2026-09-01", end_date_str="2026-02-30") == 1
+
+
+def test_main_accepts_dates_with_whitespace_and_carriage_return(monkeypatch):
+    fake_data = {
+        "near_earth_objects": {
+            "2026-09-01": [
+                {
+                    "id": "123456",
+                    "name": "Test Asteroid",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-01",
+                            "miss_distance": {
+                                "kilometers": "123456.78"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    with patch("nasa_asteroids.fetch_data", return_value=fake_data) as mock_fetch, \
+         patch("nasa_asteroids.save_raw_json"), \
+         patch("nasa_asteroids.upload_raw_to_s3"), \
+         patch("nasa_asteroids.save_to_csv"), \
+         patch("nasa_asteroids.save_to_parquet"), \
+         patch("nasa_asteroids.upload_processed_to_s3"), \
+         patch("nasa_asteroids.load_data"):
+
+        exit_code = nasa_asteroids.main(
+            start_date_str=" 2026-09-01 ",
+            end_date_str="2026-09-07\r"
+        )
+        assert exit_code == 0
+        assert mock_fetch.call_args.kwargs["start"] == date(2026, 9, 1)
+        assert mock_fetch.call_args.kwargs["end"] == date(2026, 9, 7)
 
 
 def test_main_returns_1_when_end_date_precedes_start_date(monkeypatch):

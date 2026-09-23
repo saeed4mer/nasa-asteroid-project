@@ -366,6 +366,8 @@ def main(start_date_str=None, end_date_str=None):
         return 1
 
     if start_date_str:
+        if isinstance(start_date_str, str):
+            start_date_str = start_date_str.strip()
         try:
             resolved_start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
         except ValueError:
@@ -375,6 +377,8 @@ def main(start_date_str=None, end_date_str=None):
         resolved_start = date.today()
 
     if end_date_str:
+        if isinstance(end_date_str, str):
+            end_date_str = end_date_str.strip()
         try:
             resolved_end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
         except ValueError:
