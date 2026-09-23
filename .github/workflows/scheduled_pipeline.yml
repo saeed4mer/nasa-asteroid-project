@@ -1,0 +1,59 @@
+name: Scheduled Pipeline
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date for NASA feed (YYYY-MM-DD). Optional; defaults to today."
+        required: false
+        type: string
+        default: ""
+      end_date:
+        description: "End date for NASA feed (YYYY-MM-DD). Optional; defaults to start_date + 6 days."
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: nasa-asteroid-pipeline
+  cancel-in-progress: false
+
+jobs:
+  pipeline:
+    name: Execute NASA Asteroid Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run NASA Asteroid Pipeline
+        env:
+          NASA_API_KEY: ${{ secrets.NASA_API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          S3_BUCKET_NAME: nasa-asteroid-intelligence
+          DB_PATH: asteroids.db
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+        run: |
+          if [ -n "$START_DATE" ] && [ -n "$END_DATE" ]; then
+            python nasa_asteroids.py --start-date "$START_DATE" --end-date "$END_DATE"
+          else
+            python nasa_asteroids.py
+          fi
