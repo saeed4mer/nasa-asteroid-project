@@ -924,11 +924,9 @@ def test_main_dynamic_date_evaluation_and_propagation(monkeypatch):
         expected_start = datetime.date(2026, 11, 10)
         expected_end = datetime.date(2026, 11, 16)
 
-        mock_fetch.assert_called_once_with(
-            start=expected_start,
-            end=expected_end,
-            key="TEST_KEY"
-        )
+        assert mock_fetch.call_args[1]["start"] == expected_start
+        assert mock_fetch.call_args[1]["end"] == expected_end
+        assert mock_fetch.call_args[1]["key"] == "TEST_KEY"
         assert mock_upload_raw.call_args[1]["start_date"] == expected_start
         assert mock_upload_proc.call_args[1]["start_date"] == expected_start
 
@@ -1246,3 +1244,143 @@ def test_rejection_percentage_warning_emitted_when_over_20_percent(monkeypatch, 
 
         assert exit_code == 0
         assert any("High rejection rate" in record.message for record in caplog.records)
+
+
+def test_main_logs_run_id_and_ingested_at_at_startup(monkeypatch, caplog):
+    import logging
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
+
+    with (
+        patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}),
+        patch("nasa_asteroids.save_raw_json"),
+        patch("nasa_asteroids.extract_asteroids", return_value=(valid_record, 0, 1)),
+        patch("nasa_asteroids.save_to_csv"),
+        patch("nasa_asteroids.save_to_parquet"),
+        patch("nasa_asteroids.load_data"),
+        patch("nasa_asteroids.upload_raw_to_s3"),
+        patch("nasa_asteroids.upload_processed_to_s3"),
+    ):
+        with caplog.at_level(logging.INFO):
+            exit_code = nasa_asteroids.main()
+
+        assert exit_code == 0
+        startup_records = [r for r in caplog.records if "Starting NASA asteroid pipeline" in r.message]
+        assert len(startup_records) == 1
+        msg = startup_records[0].message
+        assert "run_id:" in msg
+        assert "ingested_at:" in msg
+
+
+def test_main_logs_elapsed_duration_at_completion(monkeypatch, caplog):
+    import logging
+    import re
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
+
+    with (
+        patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}),
+        patch("nasa_asteroids.save_raw_json"),
+        patch("nasa_asteroids.extract_asteroids", return_value=(valid_record, 0, 1)),
+        patch("nasa_asteroids.save_to_csv"),
+        patch("nasa_asteroids.save_to_parquet"),
+        patch("nasa_asteroids.load_data"),
+        patch("nasa_asteroids.upload_raw_to_s3"),
+        patch("nasa_asteroids.upload_processed_to_s3"),
+    ):
+        with caplog.at_level(logging.INFO):
+            exit_code = nasa_asteroids.main()
+
+        assert exit_code == 0
+        completion_records = [r for r in caplog.records if "completed successfully in" in r.message]
+        assert len(completion_records) == 1
+        assert re.search(r"completed successfully in \d+\.\d{2}s", completion_records[0].message)
+
+
+def test_main_logs_sqlite_loading(monkeypatch, caplog):
+    import logging
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
+
+    with (
+        patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}),
+        patch("nasa_asteroids.save_raw_json"),
+        patch("nasa_asteroids.extract_asteroids", return_value=(valid_record, 0, 1)),
+        patch("nasa_asteroids.save_to_csv"),
+        patch("nasa_asteroids.save_to_parquet"),
+        patch("nasa_asteroids.load_data"),
+        patch("nasa_asteroids.upload_raw_to_s3"),
+        patch("nasa_asteroids.upload_processed_to_s3"),
+    ):
+        with caplog.at_level(logging.INFO):
+            exit_code = nasa_asteroids.main()
+
+        assert exit_code == 0
+        sqlite_records = [r for r in caplog.records if "Loaded 1 valid records into SQLite database" in r.message]
+        assert len(sqlite_records) == 1
+
+
+def test_main_logs_api_success_immediately_after_fetch(monkeypatch, caplog):
+    import logging
+    from unittest.mock import patch
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    valid_record = [{"id": "1", "name": "A", "closest_approach_date": "2026-09-20", "miss_distance_km": 100.0, "hazardous": False}]
+
+    with (
+        patch("nasa_asteroids.fetch_data", return_value={"near_earth_objects": {}}),
+        patch("nasa_asteroids.save_raw_json"),
+        patch("nasa_asteroids.extract_asteroids", return_value=(valid_record, 0, 1)),
+        patch("nasa_asteroids.save_to_csv"),
+        patch("nasa_asteroids.save_to_parquet"),
+        patch("nasa_asteroids.load_data"),
+        patch("nasa_asteroids.upload_raw_to_s3"),
+        patch("nasa_asteroids.upload_processed_to_s3"),
+    ):
+        with caplog.at_level(logging.INFO):
+            exit_code = nasa_asteroids.main()
+
+        assert exit_code == 0
+        messages = [r.message for r in caplog.records]
+        api_success_idx = next(i for i, m in enumerate(messages) if "API request successful" in m)
+        save_raw_idx = next(i for i, m in enumerate(messages) if "Saving raw NASA response" in m)
+        assert api_success_idx < save_raw_idx
+
+
+def test_top_level_error_logging_includes_run_id(tmp_path):
+    import os
+    import re
+    import subprocess
+    import sys
+
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    target_script = os.path.join(repo_dir, "nasa_asteroids.py")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = repo_dir
+
+    script = (
+        "from unittest.mock import patch\n"
+        "import os, runpy\n"
+        "with patch('requests.Session.get') as mock_get:\n"
+        "    valid_data = {'near_earth_objects': {'2026-09-20': [{'id': '123', 'name': 'A', 'close_approach_data': [{'close_approach_date': '2026-09-20', 'miss_distance': {'kilometers': '100000'}}], 'is_potentially_hazardous_asteroid': False}]}}\n"
+        "    mock_get.return_value.json.return_value = valid_data\n"
+        "    mock_get.return_value.raise_for_status.return_value = None\n"
+        "    with patch('boto3.client', side_effect=RuntimeError('Unexpected AWS error')):\n"
+        "        with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
+        f"            runpy.run_path(r'{target_script}', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 1
+    assert re.search(r"\[[0-9a-f]{12}\] Pipeline failure: Unexpected AWS error", result.stderr)

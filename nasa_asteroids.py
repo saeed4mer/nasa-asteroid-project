@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -18,7 +19,7 @@ from dotenv import load_dotenv
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
-from database import load_data
+from database import DB_PATH, load_data
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -58,7 +59,7 @@ def get_http_session(total_retries=3, backoff_factor=1):
     return session
 
 
-def fetch_data(start=None, end=None, key=None):
+def fetch_data(start=None, end=None, key=None, run_id=None):
     if start is None:
         start = date.today()
     elif isinstance(start, str):
@@ -80,7 +81,10 @@ def fetch_data(start=None, end=None, key=None):
         "api_key": key
     }
 
-    logger.info("Fetching NASA data from %s to %s", start_str, end_str)
+    if run_id:
+        logger.info("[%s] Fetching NASA data from %s to %s", run_id, start_str, end_str)
+    else:
+        logger.info("Fetching NASA data from %s to %s", start_str, end_str)
 
     session = get_http_session()
     response = session.get(URL, params=params, timeout=15)
@@ -225,6 +229,8 @@ def upload_raw_to_s3(start_date=None, metadata=None):
     s3_key = f"raw/year={year}/month={month}/day={day}/asteroids_raw.json"
 
     extra_kwargs = {"ExtraArgs": {"Metadata": metadata}} if metadata else {}
+    run_id = metadata.get("run_id") if isinstance(metadata, dict) else None
+    prefix = f"[{run_id}] " if run_id else ""
 
     s3 = boto3.client("s3")
     try:
@@ -234,10 +240,11 @@ def upload_raw_to_s3(start_date=None, metadata=None):
             s3_key,
             **extra_kwargs
         )
-        logger.info("Uploaded raw JSON to s3://%s/%s", S3_BUCKET_NAME, s3_key)
+        logger.info("%sUploaded raw JSON to s3://%s/%s", prefix, S3_BUCKET_NAME, s3_key)
     except (BotoCoreError, ClientError) as error:
         logger.error(
-            "Raw S3 upload failed for s3://%s/%s: %s",
+            "%sRaw S3 upload failed for s3://%s/%s: %s",
+            prefix,
             S3_BUCKET_NAME,
             s3_key,
             redact_api_key(str(error))
@@ -257,6 +264,8 @@ def upload_processed_to_s3(start_date=None, metadata=None):
     csv_key = f"processed_csv/year={year}/month={month}/day={day}/asteroids.csv"
 
     extra_kwargs = {"ExtraArgs": {"Metadata": metadata}} if metadata else {}
+    run_id = metadata.get("run_id") if isinstance(metadata, dict) else None
+    prefix = f"[{run_id}] " if run_id else ""
 
     s3 = boto3.client("s3")
     try:
@@ -266,10 +275,11 @@ def upload_processed_to_s3(start_date=None, metadata=None):
             parquet_key,
             **extra_kwargs
         )
-        logger.info("Uploaded processed Parquet to s3://%s/%s", S3_BUCKET_NAME, parquet_key)
+        logger.info("%sUploaded processed Parquet to s3://%s/%s", prefix, S3_BUCKET_NAME, parquet_key)
     except (BotoCoreError, ClientError) as error:
         logger.error(
-            "Processed Parquet S3 upload failed for s3://%s/%s: %s",
+            "%sProcessed Parquet S3 upload failed for s3://%s/%s: %s",
+            prefix,
             S3_BUCKET_NAME,
             parquet_key,
             redact_api_key(str(error))
@@ -283,10 +293,11 @@ def upload_processed_to_s3(start_date=None, metadata=None):
             csv_key,
             **extra_kwargs
         )
-        logger.info("Uploaded processed CSV to s3://%s/%s", S3_BUCKET_NAME, csv_key)
+        logger.info("%sUploaded processed CSV to s3://%s/%s", prefix, S3_BUCKET_NAME, csv_key)
     except (BotoCoreError, ClientError) as error:
         logger.error(
-            "Processed CSV S3 upload failed for s3://%s/%s (Parquet upload already succeeded at s3://%s/%s): %s",
+            "%sProcessed CSV S3 upload failed for s3://%s/%s (Parquet upload already succeeded at s3://%s/%s): %s",
+            prefix,
             S3_BUCKET_NAME,
             csv_key,
             S3_BUCKET_NAME,
@@ -339,7 +350,9 @@ def parse_args():
 
 
 def main(start_date_str=None, end_date_str=None):
+    start_time = time.perf_counter()
     run_id = uuid.uuid4().hex[:12]
+    main.current_run_id = run_id
     ingested_at = datetime.now(timezone.utc).isoformat()
     lineage_metadata = {
         "run_id": run_id,
@@ -382,14 +395,15 @@ def main(start_date_str=None, end_date_str=None):
             days_diff
         )
 
-    logger.info("[%s] Starting NASA asteroid pipeline (run_id: %s)", run_id, run_id)
+    logger.info("[%s] Starting NASA asteroid pipeline (run_id: %s, ingested_at: %s)", run_id, run_id, ingested_at)
 
-    data = fetch_data(start=resolved_start, end=resolved_end, key=API_KEY)
+    data = fetch_data(start=resolved_start, end=resolved_end, key=API_KEY, run_id=run_id)
+    logger.info("[%s] API request successful", run_id)
 
-    logger.info("Saving raw NASA response")
+    logger.info("[%s] Saving raw NASA response", run_id)
     save_raw_json(data)
 
-    logger.info("Extracting and validating asteroid data")
+    logger.info("[%s] Extracting and validating asteroid data", run_id)
 
     asteroid_data, skipped_records, records_received = extract_asteroids(data)
     records_valid = len(asteroid_data)
@@ -426,26 +440,26 @@ def main(start_date_str=None, end_date_str=None):
         )
         return 1
 
-    logger.info("Saving asteroid data to CSV and Parquet")
+    logger.info("[%s] Saving asteroid data to CSV and Parquet", run_id)
 
     save_to_csv(asteroid_data)
     save_to_parquet(asteroid_data)
 
     load_data(asteroid_data)
+    logger.info("[%s] Loaded %d valid records into SQLite database (%s)", run_id, records_valid, DB_PATH)
 
-    logger.info("Uploading raw NASA response to S3")
+    logger.info("[%s] Uploading raw NASA response to S3", run_id)
     upload_raw_to_s3(start_date=resolved_start, metadata=lineage_metadata)
 
-    logger.info("Uploading processed data to S3")
+    logger.info("[%s] Uploading processed data to S3", run_id)
     upload_processed_to_s3(start_date=resolved_start, metadata=lineage_metadata)
 
-    print()
-    logger.info("[%s] Pipeline run %s completed successfully", run_id, run_id)
-    logger.info("API request successful")
-    logger.info("CSV and Parquet created successfully")
-    logger.info("Records received: %d", records_received)
-    logger.info("Total valid asteroids: %d", records_valid)
-    logger.info("Skipped invalid records: %d", skipped_records)
+    elapsed_time = time.perf_counter() - start_time
+    logger.info("[%s] Pipeline run %s completed successfully in %.2fs", run_id, run_id, elapsed_time)
+    logger.info("[%s] CSV and Parquet created successfully", run_id)
+    logger.info("[%s] Records received: %d", run_id, records_received)
+    logger.info("[%s] Total valid asteroids: %d", run_id, records_valid)
+    logger.info("[%s] Skipped invalid records: %d", run_id, skipped_records)
     return 0
 
 
@@ -459,22 +473,28 @@ if __name__ == "__main__":
         sys.exit(exit_code or 0)
 
     except requests.exceptions.HTTPError as error:
+        run_id_prefix = f"[{getattr(main, 'current_run_id', None)}] " if getattr(main, 'current_run_id', None) else ""
         logger.error(
-            "NASA API returned an HTTP error: %s",
+            "%sNASA API returned an HTTP error: %s",
+            run_id_prefix,
             redact_api_key(str(error))
         )
         sys.exit(1)
 
     except requests.exceptions.RequestException as error:
+        run_id_prefix = f"[{getattr(main, 'current_run_id', None)}] " if getattr(main, 'current_run_id', None) else ""
         logger.error(
-            "Network error: %s",
+            "%sNetwork error: %s",
+            run_id_prefix,
             redact_api_key(str(error))
         )
         sys.exit(1)
 
     except Exception as error:
+        run_id_prefix = f"[{getattr(main, 'current_run_id', None)}] " if getattr(main, 'current_run_id', None) else ""
         logger.error(
-            "Pipeline failure: %s",
+            "%sPipeline failure: %s",
+            run_id_prefix,
             redact_api_key(str(error))
         )
         sys.exit(1)
