@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import date, datetime, timedelta
 
 import boto3
@@ -265,14 +266,14 @@ def main(start_date_str=None, end_date_str=None):
     if not API_KEY:
         logger.error("NASA_API_KEY was not found.")
         logger.error("Check your .env file.")
-        return
+        return 1
 
     if start_date_str:
         try:
             resolved_start = datetime.strptime(start_date_str, "%Y-%m-%d").date()
         except ValueError:
             logger.error("Invalid --start-date format: %s. Expected YYYY-MM-DD.", start_date_str)
-            return
+            return 1
     else:
         resolved_start = date.today()
 
@@ -281,13 +282,13 @@ def main(start_date_str=None, end_date_str=None):
             resolved_end = datetime.strptime(end_date_str, "%Y-%m-%d").date()
         except ValueError:
             logger.error("Invalid --end-date format: %s. Expected YYYY-MM-DD.", end_date_str)
-            return
+            return 1
     else:
         resolved_end = resolved_start + timedelta(days=6)
 
     if resolved_end < resolved_start:
         logger.error("End date (%s) cannot be before start date (%s).", resolved_end, resolved_start)
-        return
+        return 1
 
     days_diff = (resolved_end - resolved_start).days
     if days_diff > 7:
@@ -326,18 +327,35 @@ def main(start_date_str=None, end_date_str=None):
     logger.info("Records received: %d", records_received)
     logger.info("Total valid asteroids: %d", len(asteroid_data))
     logger.info("Skipped invalid records: %d", skipped_records)
+    return 0
 
 
 if __name__ == "__main__":
     args = parse_args()
     try:
-        main(start_date_str=args.start_date, end_date_str=args.end_date)
+        exit_code = main(
+            start_date_str=args.start_date,
+            end_date_str=args.end_date
+        )
+        sys.exit(exit_code or 0)
 
     except requests.exceptions.HTTPError as error:
-        logger.error("NASA API returned an HTTP error: %s", redact_api_key(str(error)))
+        logger.error(
+            "NASA API returned an HTTP error: %s",
+            redact_api_key(str(error))
+        )
+        sys.exit(1)
 
     except requests.exceptions.RequestException as error:
-        logger.error("Network error: %s", redact_api_key(str(error)))
+        logger.error(
+            "Network error: %s",
+            redact_api_key(str(error))
+        )
+        sys.exit(1)
 
     except Exception as error:
-        logger.error("Something went wrong: %s", redact_api_key(str(error)))
+        logger.error(
+            "Pipeline failure: %s",
+            redact_api_key(str(error))
+        )
+        sys.exit(1)

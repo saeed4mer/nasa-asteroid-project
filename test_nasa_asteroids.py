@@ -479,3 +479,108 @@ def test_http_error_redaction():
     assert "start_date=2026-09-01" in redacted_message
     assert "end_date=2026-09-07" in redacted_message
     assert "403 Client Error: Forbidden for url:" in redacted_message
+
+
+def test_main_returns_1_when_api_key_missing(monkeypatch):
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", None)
+    exit_code = nasa_asteroids.main()
+    assert exit_code == 1
+
+
+def test_main_returns_1_for_invalid_date_input(monkeypatch):
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    assert nasa_asteroids.main(start_date_str="2026-99-99") == 1
+    assert nasa_asteroids.main(start_date_str="2026-09-01", end_date_str="invalid-date") == 1
+
+
+def test_main_returns_1_when_end_date_precedes_start_date(monkeypatch):
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    exit_code = nasa_asteroids.main(start_date_str="2026-09-10", end_date_str="2026-09-01")
+    assert exit_code == 1
+
+
+def test_cli_exits_code_1_when_fetch_data_raises_http_error():
+    import subprocess
+    import sys
+
+    script = (
+        "from unittest.mock import patch\n"
+        "import requests, runpy\n"
+        "with patch('requests.Session.get', side_effect=requests.exceptions.HTTPError('403 Forbidden')):\n"
+        "    with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
+        "        runpy.run_path('nasa_asteroids.py', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 1
+    assert "NASA API returned an HTTP error" in result.stderr
+
+
+def test_cli_exits_code_1_when_unexpected_pipeline_exception_occurs():
+    import subprocess
+    import sys
+
+    script = (
+        "from unittest.mock import patch\n"
+        "import runpy\n"
+        "with patch('requests.Session.get') as mock_get:\n"
+        "    mock_get.return_value.json.return_value = {'near_earth_objects': {}}\n"
+        "    mock_get.return_value.raise_for_status.return_value = None\n"
+        "    with patch('boto3.client', side_effect=RuntimeError('Unexpected AWS error')):\n"
+        "        with patch('nasa_asteroids.API_KEY', 'TEST_KEY'):\n"
+        "            runpy.run_path('nasa_asteroids.py', run_name='__main__')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True
+    )
+    assert result.returncode == 1
+    assert "Pipeline failure: Unexpected AWS error" in result.stderr
+
+
+def test_main_success_returns_0(monkeypatch):
+    from unittest.mock import patch
+
+    fake_data = {
+        "near_earth_objects": {
+            "2026-09-20": [
+                {
+                    "id": "123456",
+                    "name": "Test Asteroid",
+                    "is_potentially_hazardous_asteroid": False,
+                    "close_approach_data": [
+                        {
+                            "close_approach_date": "2026-09-20",
+                            "miss_distance": {
+                                "kilometers": "123456.78"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+    monkeypatch.setattr(nasa_asteroids, "API_KEY", "TEST_KEY")
+    with patch("nasa_asteroids.fetch_data", return_value=fake_data) as mock_fetch, \
+         patch("nasa_asteroids.save_raw_json") as mock_save_raw, \
+         patch("nasa_asteroids.upload_raw_to_s3") as mock_upload_raw, \
+         patch("nasa_asteroids.save_to_csv") as mock_save_csv, \
+         patch("nasa_asteroids.save_to_parquet") as mock_save_parquet, \
+         patch("nasa_asteroids.upload_processed_to_s3") as mock_upload_proc, \
+         patch("nasa_asteroids.load_data") as mock_load_data:
+
+        exit_code = nasa_asteroids.main(start_date_str="2026-09-20", end_date_str="2026-09-26")
+
+        assert exit_code == 0
+        mock_fetch.assert_called_once()
+        mock_save_raw.assert_called_once()
+        mock_upload_raw.assert_called_once()
+        mock_save_csv.assert_called_once()
+        mock_save_parquet.assert_called_once()
+        mock_upload_proc.assert_called_once()
+        mock_load_data.assert_called_once()
