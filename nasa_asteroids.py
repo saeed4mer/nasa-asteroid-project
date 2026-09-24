@@ -4,7 +4,6 @@ import csv
 import json 
 import logging
 import os
-import re
 import sys
 import time
 import uuid
@@ -13,13 +12,17 @@ from datetime import date, datetime, timedelta, timezone
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 import pyarrow as pa
-import pyarrow.parquet as pq
 import requests
 from dotenv import load_dotenv
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
 
 from database import DB_PATH, load_data
+from pipeline_utils import (
+    build_lineage_metadata,
+    get_http_session,
+    redact_api_key,
+    upload_file_to_s3,
+    write_parquet,
+)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -42,21 +45,6 @@ ASTEROID_SCHEMA = pa.schema([
 ])
 
 URL = "https://api.nasa.gov/neo/rest/v1/feed"
-
-
-def get_http_session(total_retries=3, backoff_factor=1):
-    """Create a requests session configured with retries and exponential backoff."""
-    session = requests.Session()
-    retries = Retry(
-        total=total_retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"]
-    )
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
 
 
 def fetch_data(start=None, end=None, key=None, run_id=None):
@@ -181,12 +169,6 @@ def extract_asteroids(data):
 
     return asteroid_data, skipped_records, records_received
 
-def redact_api_key(text):
-    """Safely redact api_key query parameters from a URL or text string."""
-    if not isinstance(text, str):
-        return text
-    return re.sub(r'([?&]api_key=)[^&"\'\s]+', r'\g<1>REDACTED', text)
-
 
 def sanitize_raw_data(data):
     """Sanitize API-key-bearing URL values in top-level and per-asteroid links."""
@@ -228,17 +210,17 @@ def upload_raw_to_s3(start_date=None, metadata=None):
     day = start_date.strftime("%d")
     s3_key = f"raw/year={year}/month={month}/day={day}/asteroids_raw.json"
 
-    extra_kwargs = {"ExtraArgs": {"Metadata": metadata}} if metadata else {}
     run_id = metadata.get("run_id") if isinstance(metadata, dict) else None
     prefix = f"[{run_id}] " if run_id else ""
 
     s3 = boto3.client("s3")
     try:
-        s3.upload_file(
+        upload_file_to_s3(
             "asteroids_raw.json",
             S3_BUCKET_NAME,
             s3_key,
-            **extra_kwargs
+            metadata=metadata,
+            s3_client=s3,
         )
         logger.info("%sUploaded raw JSON to s3://%s/%s", prefix, S3_BUCKET_NAME, s3_key)
     except (BotoCoreError, ClientError) as error:
@@ -247,7 +229,7 @@ def upload_raw_to_s3(start_date=None, metadata=None):
             prefix,
             S3_BUCKET_NAME,
             s3_key,
-            redact_api_key(str(error))
+            redact_api_key(str(error)),
         )
         raise
 
@@ -263,17 +245,17 @@ def upload_processed_to_s3(start_date=None, metadata=None):
     parquet_key = f"processed/year={year}/month={month}/day={day}/asteroids.parquet"
     csv_key = f"processed_csv/year={year}/month={month}/day={day}/asteroids.csv"
 
-    extra_kwargs = {"ExtraArgs": {"Metadata": metadata}} if metadata else {}
     run_id = metadata.get("run_id") if isinstance(metadata, dict) else None
     prefix = f"[{run_id}] " if run_id else ""
 
     s3 = boto3.client("s3")
     try:
-        s3.upload_file(
+        upload_file_to_s3(
             "asteroids.parquet",
             S3_BUCKET_NAME,
             parquet_key,
-            **extra_kwargs
+            metadata=metadata,
+            s3_client=s3,
         )
         logger.info("%sUploaded processed Parquet to s3://%s/%s", prefix, S3_BUCKET_NAME, parquet_key)
     except (BotoCoreError, ClientError) as error:
@@ -282,16 +264,17 @@ def upload_processed_to_s3(start_date=None, metadata=None):
             prefix,
             S3_BUCKET_NAME,
             parquet_key,
-            redact_api_key(str(error))
+            redact_api_key(str(error)),
         )
         raise
 
     try:
-        s3.upload_file(
+        upload_file_to_s3(
             "asteroids.csv",
             S3_BUCKET_NAME,
             csv_key,
-            **extra_kwargs
+            metadata=metadata,
+            s3_client=s3,
         )
         logger.info("%sUploaded processed CSV to s3://%s/%s", prefix, S3_BUCKET_NAME, csv_key)
     except (BotoCoreError, ClientError) as error:
@@ -302,13 +285,12 @@ def upload_processed_to_s3(start_date=None, metadata=None):
             csv_key,
             S3_BUCKET_NAME,
             parquet_key,
-            redact_api_key(str(error))
+            redact_api_key(str(error)),
         )
         raise
 
 def save_to_parquet(asteroid_data, filename="asteroids.parquet"):
-    table = pa.Table.from_pylist(asteroid_data, schema=ASTEROID_SCHEMA)
-    pq.write_table(table, filename, compression="snappy")
+    write_parquet(asteroid_data, schema=ASTEROID_SCHEMA, output_path=filename, compression="snappy")
 
 def save_to_csv(asteroid_data, filename="asteroids.csv"):
     with open(filename, "w", newline="", encoding="utf-8") as file:
@@ -354,11 +336,11 @@ def main(start_date_str=None, end_date_str=None):
     run_id = uuid.uuid4().hex[:12]
     main.current_run_id = run_id
     ingested_at = datetime.now(timezone.utc).isoformat()
-    lineage_metadata = {
-        "run_id": run_id,
-        "ingested_at": ingested_at,
-        "source": "nasa_neows_api"
-    }
+    lineage_metadata = build_lineage_metadata(
+        source_name="nasa_neows_api",
+        run_id=run_id,
+        ingested_at=ingested_at,
+    )
 
     if not API_KEY:
         logger.error("NASA_API_KEY was not found.")
