@@ -1,0 +1,826 @@
+"""Comprehensive unit and integration test suite for NASA/JPL SBDB ingestion pipeline.
+
+Verifies the locked SBDB ingestion contract for nasa_sbdb.py across all 4 normalized
+datasets, API query options, payload validations, dynamic element extraction,
+physical-parameter EAV modeling, duplicate safeguard, and S3 partitioning.
+"""
+
+from datetime import date
+import json
+import logging
+from unittest.mock import MagicMock, patch
+
+from botocore.exceptions import BotoCoreError, ClientError
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+import requests
+
+import nasa_sbdb
+
+# ---------------------------------------------------------------------------
+# Test Fixtures & Payloads
+# ---------------------------------------------------------------------------
+SAMPLE_SBDB_2025_HX_PAYLOAD = {
+    "signature": {"version": "1.3", "source": "NASA/JPL Small-Body Database (SBDB) API"},
+    "object": {
+        "kind": "au",
+        "orbit_id": "4",
+        "orbit_class": {"name": "Apollo", "code": "APO"},
+        "pha": False,
+        "neo": True,
+        "fullname": "(2025 HX)",
+        "spkid": "54527277",
+        "des": "2025 HX",
+        "prefix": None,
+        "shortname": None,
+    },
+    "orbit": {
+        "cov_epoch": "2460788.5",
+        "source": "JPL",
+        "producer": "Otto Matic",
+        "equinox": "J2000",
+        "sb_used": "SB441-N16",
+        "moid": "0.000393",
+        "rms": "0.35",
+        "n_del_obs_used": None,
+        "epoch": "2461200.5",
+        "soln_date": "2025-04-25 08:35:30",
+        "not_valid_before": None,
+        "n_dop_obs_used": None,
+        "elements": [
+            {"units": None, "value": "0.395", "label": "e", "title": "eccentricity", "sigma": "0.00044", "name": "e"},
+            {"name": "a", "title": "semi-major axis", "sigma": "0.00052", "label": "a", "value": "1.2", "units": "au"},
+            {"name": "q", "sigma": "0.00021", "title": "perihelion distance", "label": "q", "units": "au", "value": "0.724"},
+            {"label": "i", "value": "7.66", "units": "deg", "name": "i", "title": "inclination; angle with respect to x-y ecliptic plane", "sigma": "0.0085"},
+            {"name": "om", "title": "longitude of the ascending node", "sigma": "0.00028", "label": "node", "units": "deg", "value": "31.7"},
+            {"name": "w", "title": "argument of perihelion", "sigma": "0.0022", "label": "peri", "units": "deg", "value": "272"},
+            {"units": "deg", "value": "263", "label": "M", "title": "mean anomaly", "sigma": "0.15", "name": "ma"},
+            {"sigma": "0.29", "title": "time of perihelion passage", "name": "tp", "units": "TDB", "value": "2461329.257", "label": "tp"},
+            {"sigma": "0.31", "title": "sidereal orbital period", "name": "per", "value": "478", "units": "d", "label": "period"},
+            {"label": "n", "units": "deg/d", "value": "0.753", "name": "n", "sigma": "0.00049", "title": "mean motion"},
+            {"label": "Q", "value": "1.67", "units": "au", "name": "ad", "sigma": "0.00072", "title": "aphelion distance"},
+        ],
+        "model_pars": [],
+        "first_obs": "2025-04-21",
+        "orbit_id": "4",
+        "t_jup": "5.223",
+        "pe_used": "DE441",
+        "moid_jup": "3.59",
+        "n_obs_used": 36,
+        "comment": None,
+        "not_valid_after": None,
+        "last_obs": "2025-04-24",
+        "condition_code": "7",
+        "data_arc": "3",
+        "two_body": None,
+    },
+    "phys_par": [
+        {
+            "ref": "MPO913959",
+            "notes": "autocmod 3.0f",
+            "name": "H",
+            "title": "absolute magnitude",
+            "sigma": ".29621",
+            "value": "27.55",
+            "units": None,
+            "desc": "absolute magnitude (magnitude at 1 au from Sun and observer)",
+        }
+    ],
+}
+
+SAMPLE_SBDB_EROS_PAYLOAD = {
+    "signature": {"version": "1.3", "source": "NASA/JPL Small-Body Database (SBDB) API"},
+    "object": {
+        "neo": True,
+        "prefix": None,
+        "pha": False,
+        "orbit_id": "659",
+        "shortname": "433 Eros",
+        "fullname": "433 Eros (A898 PA)",
+        "spkid": "2000433",
+        "des": "433",
+        "orbit_class": {"name": "Amor", "code": "AMO"},
+        "kind": "an",
+    },
+    "orbit": {
+        "first_obs": "1893-10-29",
+        "pe_used": "DE441",
+        "elements": [
+            {"name": "e", "label": "e", "title": "eccentricity", "sigma": "9.4e-09", "units": None, "value": "0.223"},
+            {"name": "a", "title": "semi-major axis", "label": "a", "units": "au", "value": "1.46", "sigma": "1.5e-10"},
+            {"name": "q", "label": "q", "title": "perihelion distance", "units": "au", "value": "1.13", "sigma": "1.4e-08"},
+            {"sigma": "1.2e-06", "units": "deg", "value": "10.8", "name": "i", "title": "inclination", "label": "i"},
+            {"units": "deg", "value": "304", "sigma": "3.6e-06", "name": "om", "label": "node", "title": "longitude of ascending node"},
+            {"sigma": "4e-06", "value": "179", "units": "deg", "label": "peri", "title": "argument of perihelion", "name": "w"},
+        ],
+        "n_dop_obs_used": 2,
+        "n_obs_used": 9130,
+        "model_pars": [],
+        "moid_jup": "3.3",
+        "source": "JPL",
+        "t_jup": "4.582",
+        "equinox": "J2000",
+        "data_arc": "46582",
+        "comment": None,
+        "last_obs": "2021-05-13",
+        "two_body": None,
+        "not_valid_after": None,
+        "condition_code": "0",
+        "orbit_id": "659",
+        "sb_used": "SB441-N16",
+        "cov_epoch": "2453311.5",
+        "epoch": "2461200.5",
+        "soln_date": "2021-05-24 17:55:05",
+        "n_del_obs_used": 4,
+        "not_valid_before": None,
+        "rms": "0.3",
+        "moid": "0.149",
+        "producer": "Giorgini",
+    },
+    "phys_par": [
+        {"name": "H", "value": "10.40", "sigma": None, "units": None, "ref": "E2026L10", "notes": None, "title": "absolute magnitude", "desc": "absolute magnitude"},
+        {"name": "diameter", "value": "16.84", "sigma": "0.06", "units": "km", "ref": "Yeomans et al.", "notes": "sphere", "title": "diameter", "desc": "effective body diameter"},
+        {"name": "extent", "value": "34.4x11.2x11.2", "sigma": None, "units": "km", "ref": "Veverka et al.", "notes": None, "title": "extent", "desc": "triaxial body dimensions"},
+        {"name": "albedo", "value": "0.25", "sigma": "0.06", "units": None, "ref": "Veverka et al.", "notes": "average", "title": "geometric albedo", "desc": "geometric albedo"},
+        {"name": "rot_per", "value": "5.27", "sigma": None, "units": "h", "ref": "LCDB", "notes": "ref list", "title": "rotation period", "desc": "body rotation period"},
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# 1. API Fetch & HTTP Tests
+# ---------------------------------------------------------------------------
+def test_fetch_sbdb_success_2025_hx():
+    """Verify fetch_sbdb_data issues correct GET request with full-prec=1 and phys-par=1."""
+    with patch("nasa_sbdb.get_http_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = SAMPLE_SBDB_2025_HX_PAYLOAD
+        mock_response.raise_for_status.return_value = None
+        mock_session.get.return_value = mock_response
+        mock_get_session.return_value = mock_session
+
+        payload = nasa_sbdb.fetch_sbdb_data(target="2025 HX", id_type="sstr", run_id="run_test")
+
+        assert payload == SAMPLE_SBDB_2025_HX_PAYLOAD
+        mock_session.get.assert_called_once_with(
+            "https://ssd-api.jpl.nasa.gov/sbdb.api",
+            params={"sstr": "2025 HX", "phys-par": "1", "full-prec": "1"},
+            headers={"User-Agent": "NASA-Planetary-Defense-Platform/1.0"},
+            timeout=15,
+        )
+        mock_response.raise_for_status.assert_called_once()
+
+
+def test_fetch_sbdb_identifier_handling():
+    """Verify sstr, spk, and des identifier types are correctly mapped to query parameters."""
+    with patch("nasa_sbdb.get_http_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = SAMPLE_SBDB_2025_HX_PAYLOAD
+        mock_response.raise_for_status.return_value = None
+        mock_session.get.return_value = mock_response
+        mock_get_session.return_value = mock_session
+
+        # 1. SPK-ID lookup
+        nasa_sbdb.fetch_sbdb_data(target="54527277", id_type="spk")
+        assert mock_session.get.call_args[1]["params"]["spk"] == "54527277"
+        assert "sstr" not in mock_session.get.call_args[1]["params"]
+
+        # 2. Designation lookup
+        nasa_sbdb.fetch_sbdb_data(target="2025 HX", id_type="des")
+        assert mock_session.get.call_args[1]["params"]["des"] == "2025 HX"
+
+        # 3. Invalid id_type
+        with pytest.raises(ValueError, match="Invalid id_type"):
+            nasa_sbdb.fetch_sbdb_data(target="2025 HX", id_type="invalid_type")
+
+
+def test_fetch_sbdb_handles_ambiguous_300_query():
+    """Verify ambiguous query response (code 300 / list) raises explicit ValueError."""
+    ambiguous_payload = {
+        "signature": {"version": "1.3"},
+        "code": 300,
+        "message": "specified query matched more than one object",
+        "count": 2,
+        "list": [
+            {"pdes": "141P", "name": "141P/Machholz 2"},
+            {"pdes": "141P-A", "name": "141P/Machholz 2-A"},
+        ],
+    }
+    with patch("nasa_sbdb.get_http_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = ambiguous_payload
+        mock_response.raise_for_status.return_value = None
+        mock_session.get.return_value = mock_response
+        mock_get_session.return_value = mock_session
+
+        with pytest.raises(ValueError, match="Ambiguous SBDB query for target '141P'"):
+            nasa_sbdb.fetch_sbdb_data(target="141P", id_type="sstr")
+
+
+def test_fetch_sbdb_handles_404_or_object_not_found():
+    """Verify object not found message raises descriptive ValueError."""
+    not_found_payload = {
+        "message": "specified object was not found",
+        "code": 404,
+    }
+    with patch("nasa_sbdb.get_http_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = not_found_payload
+        mock_response.raise_for_status.return_value = None
+        mock_session.get.return_value = mock_response
+        mock_get_session.return_value = mock_session
+
+        with pytest.raises(ValueError, match="SBDB API error for target 'UNKNOWN_ASTEROID'"):
+            nasa_sbdb.fetch_sbdb_data(target="UNKNOWN_ASTEROID")
+
+
+def test_fetch_sbdb_handles_malformed_json_and_missing_sections():
+    """Verify non-dict payload, missing object, or missing orbit raises ValueError."""
+    with patch("nasa_sbdb.get_http_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_session.get.return_value = mock_response
+        mock_get_session.return_value = mock_session
+
+        # 1. Non-dict root
+        mock_response.json.return_value = ["not", "a", "dict"]
+        with pytest.raises(ValueError, match="expected JSON object root"):
+            nasa_sbdb.fetch_sbdb_data()
+
+        # 2. Missing object section
+        mock_response.json.return_value = {"orbit": {}}
+        with pytest.raises(ValueError, match="missing or malformed 'object' section"):
+            nasa_sbdb.fetch_sbdb_data()
+
+        # 3. Missing orbit section
+        mock_response.json.return_value = {"object": {}}
+        with pytest.raises(ValueError, match="missing or malformed 'orbit' section"):
+            nasa_sbdb.fetch_sbdb_data()
+
+
+def test_fetch_sbdb_missing_signature_emits_warning(caplog):
+    """Verify missing signature emits warning log but does not halt."""
+    payload_without_sig = {
+        "object": SAMPLE_SBDB_2025_HX_PAYLOAD["object"],
+        "orbit": SAMPLE_SBDB_2025_HX_PAYLOAD["orbit"],
+    }
+    with patch("nasa_sbdb.get_http_session") as mock_get_session:
+        mock_session = MagicMock()
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload_without_sig
+        mock_response.raise_for_status.return_value = None
+        mock_session.get.return_value = mock_response
+        mock_get_session.return_value = mock_session
+
+        with caplog.at_level(logging.WARNING):
+            data = nasa_sbdb.fetch_sbdb_data(run_id="run_sig")
+
+        assert data == payload_without_sig
+        assert any("missing 'signature' block" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# 2. Extraction & Normalization Tests
+# ---------------------------------------------------------------------------
+def test_extract_sbdb_object_fields_2025_hx():
+    """Verify extract_sbdb_object extracts all 14 fields conforming to SBDB_OBJECT_SCHEMA."""
+    record = nasa_sbdb.extract_sbdb_object(
+        payload=SAMPLE_SBDB_2025_HX_PAYLOAD,
+        snapshot_key="2026-09-26",
+        run_id="r1",
+        snapshot_time="2026-09-26T00:00:00Z",
+    )
+
+    assert record["snapshot_key"] == "2026-09-26"
+    assert record["run_id"] == "r1"
+    assert record["snapshot_time"] == "2026-09-26T00:00:00Z"
+    assert record["spkid"] == "54527277"
+    assert record["designation"] == "2025 HX"
+    assert record["fullname"] == "(2025 HX)"
+    assert record["shortname"] is None
+    assert record["object_kind"] == "au"
+    assert record["is_neo"] is True
+    assert record["is_pha"] is False
+    assert record["orbit_class_code"] == "APO"
+    assert record["orbit_class_name"] == "Apollo"
+    assert record["orbit_id"] == "4"
+    assert record["prefix"] is None
+
+
+def test_extract_sbdb_object_missing_identifiers_raises_value_error():
+    """Verify missing spkid, des, orbit_class, or orbit_id raises ValueError."""
+    bad_payload = {"object": {"des": "2025 HX"}}
+    with pytest.raises(ValueError, match="missing or invalid 'spkid'"):
+        nasa_sbdb.extract_sbdb_object(bad_payload, "2026-09-26", "r1", "t1")
+
+    bad_payload2 = {"object": {"spkid": "54527277"}}
+    with pytest.raises(ValueError, match="missing or invalid 'des'"):
+        nasa_sbdb.extract_sbdb_object(bad_payload2, "2026-09-26", "r1", "t1")
+
+
+def test_extract_sbdb_orbit_fields_2025_hx():
+    """Verify extract_sbdb_orbit extracts all 21 fields conforming to SBDB_ORBIT_SCHEMA."""
+    record = nasa_sbdb.extract_sbdb_orbit(
+        payload=SAMPLE_SBDB_2025_HX_PAYLOAD,
+        snapshot_key="2026-09-26",
+        run_id="r1",
+        snapshot_time="2026-09-26T00:00:00Z",
+        spkid="54527277",
+    )
+
+    assert record["spkid"] == "54527277"
+    assert record["orbit_id"] == "4"
+    assert record["epoch_jd"] == 2461200.5
+    assert record["equinox"] == "J2000"
+    assert record["soln_date"] == "2025-04-25 08:35:30"
+    assert record["orbit_source"] == "JPL"
+    assert record["producer"] == "Otto Matic"
+    assert record["first_obs"] == "2025-04-21"
+    assert record["last_obs"] == "2025-04-24"
+    assert record["data_arc_days"] == 3
+    assert record["n_obs_used"] == 36
+    assert record["condition_code"] == "7"
+    assert record["rms"] == 0.35
+    assert record["earth_moid_au"] == 0.000393
+    assert record["jupiter_moid_au"] == 3.59
+    assert record["t_jup"] == 5.223
+    assert record["pe_used"] == "DE441"
+    assert record["sb_used"] == "SB441-N16"
+
+
+def test_extract_sbdb_orbit_invalid_epoch_and_metrics_raises():
+    """Verify invalid epoch, negative RMS, or negative MOID raises ValueError."""
+    bad_orbit = {"orbit": {"orbit_id": "1", "epoch": "-100", "equinox": "J2000"}}
+    with pytest.raises(ValueError, match="invalid epoch"):
+        nasa_sbdb.extract_sbdb_orbit(bad_orbit, "k", "r", "t", "spk1")
+
+    bad_orbit2 = {
+        "orbit": {
+            "orbit_id": "1", "epoch": "2450000.5", "equinox": "J2000",
+            "rms": "-0.5", "moid": "0.1", "n_obs_used": 10,
+        }
+    }
+    with pytest.raises(ValueError, match="invalid rms"):
+        nasa_sbdb.extract_sbdb_orbit(bad_orbit2, "k", "r", "t", "spk1")
+
+    bad_orbit3 = {
+        "orbit": {
+            "orbit_id": "1", "epoch": "2450000.5", "equinox": "J2000",
+            "rms": "0.5", "moid": "-0.01", "n_obs_used": 10,
+        }
+    }
+    with pytest.raises(ValueError, match="invalid Earth MOID"):
+        nasa_sbdb.extract_sbdb_orbit(bad_orbit3, "k", "r", "t", "spk1")
+
+
+def test_extract_sbdb_orbit_elements_dynamic_extraction():
+    """Verify dynamic orbital element extraction preserves all elements without assuming 11."""
+    records = nasa_sbdb.extract_sbdb_orbit_elements(
+        payload=SAMPLE_SBDB_2025_HX_PAYLOAD,
+        snapshot_key="2026-09-26",
+        run_id="r1",
+        snapshot_time="2026-09-26T00:00:00Z",
+        spkid="54527277",
+        orbit_id="4",
+        epoch_jd=2461200.5,
+        equinox="J2000",
+    )
+
+    assert len(records) == 11
+    e_rec = next(r for r in records if r["element_name"] == "e")
+    assert e_rec["element_value"] == 0.395
+    assert e_rec["sigma"] == 0.00044
+    assert e_rec["label"] == "e"
+    assert e_rec["title"] == "eccentricity"
+    assert e_rec["epoch_jd"] == 2461200.5
+    assert e_rec["equinox"] == "J2000"
+    assert e_rec["orbit_id"] == "4"
+
+    a_rec = next(r for r in records if r["element_name"] == "a")
+    assert a_rec["element_value"] == 1.2
+    assert a_rec["units"] == "au"
+
+
+def test_extract_sbdb_orbit_elements_reduced_count():
+    """Verify payload with only 2 or 6 elements extracts successfully without requiring 11."""
+    payload_reduced = {
+        "orbit": {
+            "elements": [
+                {"name": "e", "value": "0.1", "sigma": "0.001", "units": None},
+                {"name": "q", "value": "1.05", "sigma": "0.002", "units": "au"},
+            ]
+        }
+    }
+    records = nasa_sbdb.extract_sbdb_orbit_elements(
+        payload=payload_reduced,
+        snapshot_key="k",
+        run_id="r",
+        snapshot_time="t",
+        spkid="123",
+        orbit_id="1",
+        epoch_jd=2450000.5,
+        equinox="J2000",
+    )
+    assert len(records) == 2
+    assert records[0]["element_name"] == "e"
+    assert records[1]["element_name"] == "q"
+
+
+def test_extract_sbdb_orbit_elements_negative_eccentricity_raises():
+    """Verify negative eccentricity raises ValueError."""
+    bad_elements = {
+        "orbit": {
+            "elements": [{"name": "e", "value": "-0.05"}]
+        }
+    }
+    with pytest.raises(ValueError, match="negative eccentricity"):
+        nasa_sbdb.extract_sbdb_orbit_elements(bad_elements, "k", "r", "t", "123", "1", 2450000.5, "J2000")
+
+
+def test_extract_sbdb_physical_parameters_eav_extraction():
+    """Verify physical properties extraction into Table 4 EAV schema with numeric and string types."""
+    records = nasa_sbdb.extract_sbdb_physical_parameters(
+        payload=SAMPLE_SBDB_EROS_PAYLOAD,
+        snapshot_key="2026-09-26",
+        run_id="r1",
+        snapshot_time="2026-09-26T00:00:00Z",
+        spkid="2000433",
+    )
+
+    assert len(records) == 5
+
+    h_rec = next(r for r in records if r["param_name"] == "H")
+    assert h_rec["param_value_numeric"] == 10.40
+    assert h_rec["param_value_raw"] == "10.40"
+    assert h_rec["bib_reference"] == "E2026L10"
+    assert h_rec["sigma"] is None
+
+    diam_rec = next(r for r in records if r["param_name"] == "diameter")
+    assert diam_rec["param_value_numeric"] == 16.84
+    assert diam_rec["sigma"] == 0.06
+    assert diam_rec["units"] == "km"
+
+    # Non-numeric range string preservation
+    extent_rec = next(r for r in records if r["param_name"] == "extent")
+    assert extent_rec["param_value_numeric"] is None
+    assert extent_rec["param_value_raw"] == "34.4x11.2x11.2"
+    assert extent_rec["units"] == "km"
+
+
+def test_extract_sbdb_physical_parameters_duplicate_param_name_fails_dq():
+    """Verify duplicate param_name strictly raises ValueError and logs error before Parquet/S3."""
+    dup_payload = {
+        "phys_par": [
+            {"name": "H", "value": "27.55"},
+            {"name": "H", "value": "28.10"},
+        ]
+    }
+    with pytest.raises(ValueError, match="duplicate physical parameter 'H'"):
+        nasa_sbdb.extract_sbdb_physical_parameters(
+            dup_payload, "2026-09-26", "r1", "2026-09-26T00:00:00Z", "54527277"
+        )
+
+
+def test_extract_sbdb_nullable_optional_fields():
+    """Verify optional astronomical fields are gracefully stored as None when absent/null."""
+    minimal_payload = {
+        "object": {
+            "spkid": "1001",
+            "des": "1001 Test",
+            "fullname": "1001 Test",
+            "shortname": None,
+            "kind": "au",
+            "neo": True,
+            "pha": False,
+            "orbit_class": {"code": "APO", "name": "Apollo"},
+            "orbit_id": "1",
+            "prefix": None,
+        },
+        "orbit": {
+            "orbit_id": "1",
+            "epoch": "2460000.5",
+            "equinox": "J2000",
+            "soln_date": "2026-01-01",
+            "first_obs": "2025-01-01",
+            "last_obs": "2026-01-01",
+            "n_obs_used": 50,
+            "rms": "0.4",
+            "moid": "0.01",
+            "producer": None,
+            "moid_jup": None,
+            "t_jup": None,
+            "data_arc": None,
+            "pe_used": None,
+            "sb_used": None,
+            "elements": [{"name": "e", "value": "0.2"}],
+        },
+        "phys_par": [
+            {"name": "H", "value": "20.0", "sigma": None, "units": None, "ref": None, "notes": None}
+        ],
+    }
+
+    obj = nasa_sbdb.extract_sbdb_object(minimal_payload, "k", "r", "t")
+    assert obj["shortname"] is None
+    assert obj["prefix"] is None
+
+    orb = nasa_sbdb.extract_sbdb_orbit(minimal_payload, "k", "r", "t", "1001")
+    assert orb["producer"] is None
+    assert orb["jupiter_moid_au"] is None
+    assert orb["t_jup"] is None
+    assert orb["data_arc_days"] is None
+
+    phys = nasa_sbdb.extract_sbdb_physical_parameters(minimal_payload, "k", "r", "t", "1001")
+    assert phys[0]["sigma"] is None
+    assert phys[0]["units"] is None
+    assert phys[0]["bib_reference"] is None
+    assert phys[0]["notes"] is None
+
+
+# ---------------------------------------------------------------------------
+# 3. Schema & Parquet Generation Tests
+# ---------------------------------------------------------------------------
+def test_exact_pyarrow_schemas_match_contract():
+    """Verify all 4 PyArrow schemas conform to the approved contract."""
+    # 1. Object: 14 fields
+    assert len(nasa_sbdb.SBDB_OBJECT_SCHEMA) == 14
+    assert nasa_sbdb.SBDB_OBJECT_SCHEMA.field("snapshot_key").type == pa.string()
+    assert nasa_sbdb.SBDB_OBJECT_SCHEMA.field("spkid").type == pa.string()
+    assert nasa_sbdb.SBDB_OBJECT_SCHEMA.field("is_neo").type == pa.bool_()
+    assert nasa_sbdb.SBDB_OBJECT_SCHEMA.field("is_pha").type == pa.bool_()
+
+    # 2. Orbit: 21 fields
+    assert len(nasa_sbdb.SBDB_ORBIT_SCHEMA) == 21
+    assert nasa_sbdb.SBDB_ORBIT_SCHEMA.field("epoch_jd").type == pa.float64()
+    assert nasa_sbdb.SBDB_ORBIT_SCHEMA.field("rms").type == pa.float64()
+    assert nasa_sbdb.SBDB_ORBIT_SCHEMA.field("earth_moid_au").type == pa.float64()
+
+    # 3. Elements: 13 fields
+    assert len(nasa_sbdb.SBDB_ORBIT_ELEMENT_SCHEMA) == 13
+    assert nasa_sbdb.SBDB_ORBIT_ELEMENT_SCHEMA.field("element_value").type == pa.float64()
+
+    # 4. Physical: 13 fields
+    assert len(nasa_sbdb.SBDB_PHYS_PAR_SCHEMA) == 13
+    assert nasa_sbdb.SBDB_PHYS_PAR_SCHEMA.field("param_value_numeric").type == pa.float64()
+    assert nasa_sbdb.SBDB_PHYS_PAR_SCHEMA.field("param_value_raw").type == pa.string()
+
+
+def test_snappy_parquet_generation(tmp_path):
+    """Verify Parquet generation creates valid Snappy-compressed files matching schemas."""
+    obj_rec = nasa_sbdb.extract_sbdb_object(SAMPLE_SBDB_2025_HX_PAYLOAD, "2026-09-26", "r1", "t1")
+    orb_rec = nasa_sbdb.extract_sbdb_orbit(SAMPLE_SBDB_2025_HX_PAYLOAD, "2026-09-26", "r1", "t1", "54527277")
+    elem_recs = nasa_sbdb.extract_sbdb_orbit_elements(
+        SAMPLE_SBDB_2025_HX_PAYLOAD, "2026-09-26", "r1", "t1", "54527277", "4", 2461200.5, "J2000"
+    )
+    phys_recs = nasa_sbdb.extract_sbdb_physical_parameters(SAMPLE_SBDB_2025_HX_PAYLOAD, "2026-09-26", "r1", "t1", "54527277")
+
+    out_obj = str(tmp_path / "fact_sbdb_object_snapshot.parquet")
+    out_orb = str(tmp_path / "fact_sbdb_orbit.parquet")
+    out_elem = str(tmp_path / "fact_sbdb_orbit_element.parquet")
+    out_phys = str(tmp_path / "fact_sbdb_physical_parameter.parquet")
+
+    nasa_sbdb.write_parquet([obj_rec], nasa_sbdb.SBDB_OBJECT_SCHEMA, out_obj)
+    nasa_sbdb.write_parquet([orb_rec], nasa_sbdb.SBDB_ORBIT_SCHEMA, out_orb)
+    nasa_sbdb.write_parquet(elem_recs, nasa_sbdb.SBDB_ORBIT_ELEMENT_SCHEMA, out_elem)
+    nasa_sbdb.write_parquet(phys_recs, nasa_sbdb.SBDB_PHYS_PAR_SCHEMA, out_phys)
+
+    # Validate read-back with PyArrow
+    f_obj = pq.ParquetFile(out_obj)
+    assert f_obj.metadata.num_rows == 1
+    assert f_obj.metadata.row_group(0).column(0).compression.lower() == "snappy"
+
+    f_elem = pq.ParquetFile(out_elem)
+    assert f_elem.metadata.num_rows == 11
+    assert f_elem.metadata.row_group(0).column(0).compression.lower() == "snappy"
+
+    f_phys = pq.ParquetFile(out_phys)
+    assert f_phys.metadata.num_rows == 1
+    assert f_phys.metadata.row_group(0).column(0).compression.lower() == "snappy"
+
+
+def test_save_raw_json(tmp_path):
+    """Verify save_raw_json writes formatted JSON payload."""
+    raw_path = str(tmp_path / "sbdb_raw_test.json")
+    nasa_sbdb.save_raw_json(SAMPLE_SBDB_2025_HX_PAYLOAD, filename=raw_path)
+
+    with open(raw_path, encoding="utf-8") as f:
+        data = json.load(f)
+    assert data["object"]["spkid"] == "54527277"
+
+
+# ---------------------------------------------------------------------------
+# 4. S3 Upload & Key Generation Tests
+# ---------------------------------------------------------------------------
+def test_upload_raw_to_s3_exact_path_and_metadata():
+    """Verify raw S3 upload path matches raw/sbdb/object/... specification."""
+    test_date = date(2026, 9, 26)
+    metadata = {"source": "nasa_jpl_sbdb_api", "run_id": "r1", "ingested_at": "t1"}
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        nasa_sbdb.upload_raw_to_s3(
+            local_file_path="sbdb_raw_54527277.json",
+            snapshot_date=test_date,
+            spkid="54527277",
+            metadata=metadata,
+        )
+
+        mock_boto.assert_called_once_with("s3")
+        mock_s3.upload_file.assert_called_once_with(
+            "sbdb_raw_54527277.json",
+            "nasa-asteroid-intelligence",
+            "raw/sbdb/object/year=2026/month=09/day=26/spkid=54527277/sbdb_raw_54527277.json",
+            ExtraArgs={"Metadata": metadata},
+        )
+
+
+def test_upload_processed_to_s3_exact_paths():
+    """Verify processed S3 uploads generate exact isolated namespaces for all 4 tables."""
+    test_date = date(2026, 9, 26)
+    metadata = {"source": "nasa_jpl_sbdb_api", "run_id": "r1"}
+
+    tables = [
+        "fact_sbdb_object_snapshot",
+        "fact_sbdb_orbit",
+        "fact_sbdb_orbit_element",
+        "fact_sbdb_physical_parameter",
+    ]
+
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_boto.return_value = mock_s3
+
+        for tbl in tables:
+            local_name = f"{tbl}.parquet"
+            nasa_sbdb.upload_processed_to_s3(
+                table_name=tbl,
+                local_file_path=local_name,
+                snapshot_date=test_date,
+                metadata=metadata,
+            )
+
+        assert mock_s3.upload_file.call_count == 4
+        uploaded_keys = [c[0][2] for c in mock_s3.upload_file.call_args_list]
+
+        for tbl in tables:
+            expected_key = f"processed/sbdb/{tbl}/year=2026/month=09/day=26/{tbl}.parquet"
+            assert expected_key in uploaded_keys
+
+
+def test_upload_raw_to_s3_handles_client_error():
+    """Verify ClientError during S3 upload is logged with redaction and re-raised."""
+    client_error = ClientError({"Error": {"Code": "403", "Message": "AccessDenied"}}, "PutObject")
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_s3.upload_file.side_effect = client_error
+        mock_boto.return_value = mock_s3
+
+        with pytest.raises(ClientError):
+            nasa_sbdb.upload_raw_to_s3(
+                local_file_path="sbdb_raw.json",
+                snapshot_date=date(2026, 9, 26),
+                spkid="123",
+            )
+
+
+def test_upload_processed_to_s3_handles_boto_error():
+    """Verify BotoCoreError during processed upload is logged with redaction and re-raised."""
+    boto_err = BotoCoreError()
+    with patch("boto3.client") as mock_boto:
+        mock_s3 = MagicMock()
+        mock_s3.upload_file.side_effect = boto_err
+        mock_boto.return_value = mock_s3
+
+        with pytest.raises(BotoCoreError):
+            nasa_sbdb.upload_processed_to_s3(
+                table_name="fact_sbdb_orbit",
+                local_file_path="fact_sbdb_orbit.parquet",
+                snapshot_date=date(2026, 9, 26),
+            )
+
+
+# ---------------------------------------------------------------------------
+# 5. Pipeline Orchestration, CLI, & Circuit Breaker Tests
+# ---------------------------------------------------------------------------
+def test_cli_target_and_id_type_override():
+    """Verify CLI target and id-type arguments propagate to fetch_sbdb_data."""
+    with patch("nasa_sbdb.fetch_sbdb_data", return_value=SAMPLE_SBDB_EROS_PAYLOAD) as mock_fetch, \
+         patch("nasa_sbdb.save_raw_json"), \
+         patch("nasa_sbdb.write_parquet"), \
+         patch("nasa_sbdb.upload_raw_to_s3"), \
+         patch("nasa_sbdb.upload_processed_to_s3"):
+
+        exit_code = nasa_sbdb.main(target="433", id_type="des", snapshot_date_str="2026-09-26")
+
+        assert exit_code == 0
+        mock_fetch.assert_called_once_with(target="433", id_type="des", run_id=mock_fetch.call_args[1]["run_id"])
+
+
+def test_cli_snapshot_date_propagation():
+    """Verify snapshot-date CLI override propagates to S3 uploads."""
+    with patch("nasa_sbdb.fetch_sbdb_data", return_value=SAMPLE_SBDB_2025_HX_PAYLOAD), \
+         patch("nasa_sbdb.save_raw_json"), \
+         patch("nasa_sbdb.write_parquet"), \
+         patch("nasa_sbdb.upload_raw_to_s3") as mock_upload_raw, \
+         patch("nasa_sbdb.upload_processed_to_s3") as mock_upload_proc:
+
+        exit_code = nasa_sbdb.main(snapshot_date_str="2026-11-15")
+
+        assert exit_code == 0
+        assert mock_upload_raw.call_args[1]["snapshot_date"] == date(2026, 11, 15)
+        assert mock_upload_proc.call_args[1]["snapshot_date"] == date(2026, 11, 15)
+
+
+def test_cli_invalid_date_returns_1():
+    """Verify invalid snapshot date string logs error and returns exit code 1."""
+    assert nasa_sbdb.main(snapshot_date_str="not-a-date") == 1
+    assert nasa_sbdb.main(snapshot_date_str="2026-02-30") == 1
+
+
+def test_circuit_breaker_halts_before_parquet_and_s3_on_fetch_failure():
+    """Verify fetch failure halts pipeline immediately before raw/parquet/S3 writes."""
+    with patch("nasa_sbdb.fetch_sbdb_data", side_effect=requests.exceptions.HTTPError("500 Server Error")), \
+         patch("nasa_sbdb.save_raw_json") as mock_raw, \
+         patch("nasa_sbdb.write_parquet") as mock_pq, \
+         patch("nasa_sbdb.upload_raw_to_s3") as mock_up_raw, \
+         patch("nasa_sbdb.upload_processed_to_s3") as mock_up_proc:
+
+        exit_code = nasa_sbdb.main()
+
+        assert exit_code == 1
+        mock_raw.assert_not_called()
+        mock_pq.assert_not_called()
+        mock_up_raw.assert_not_called()
+        mock_up_proc.assert_not_called()
+
+
+def test_circuit_breaker_halts_before_parquet_and_s3_on_duplicate_dq_failure():
+    """Verify duplicate physical parameter DQ failure halts before Parquet/S3 writes."""
+    dup_payload = {
+        "object": SAMPLE_SBDB_2025_HX_PAYLOAD["object"],
+        "orbit": SAMPLE_SBDB_2025_HX_PAYLOAD["orbit"],
+        "phys_par": [
+            {"name": "H", "value": "27.55"},
+            {"name": "H", "value": "28.00"},
+        ],
+    }
+
+    with patch("nasa_sbdb.fetch_sbdb_data", return_value=dup_payload), \
+         patch("nasa_sbdb.save_raw_json") as mock_raw, \
+         patch("nasa_sbdb.write_parquet") as mock_pq, \
+         patch("nasa_sbdb.upload_raw_to_s3") as mock_up_raw, \
+         patch("nasa_sbdb.upload_processed_to_s3") as mock_up_proc:
+
+        exit_code = nasa_sbdb.main()
+
+        assert exit_code == 1
+        mock_raw.assert_not_called()
+        mock_pq.assert_not_called()
+        mock_up_raw.assert_not_called()
+        mock_up_proc.assert_not_called()
+
+
+def test_main_success_returns_0_and_lineage_metadata():
+    """Verify full end-to-end execution succeeds with code 0 and exact lineage metadata."""
+    with patch("nasa_sbdb.fetch_sbdb_data", return_value=SAMPLE_SBDB_2025_HX_PAYLOAD), \
+         patch("nasa_sbdb.save_raw_json") as mock_raw, \
+         patch("nasa_sbdb.write_parquet") as mock_pq, \
+         patch("nasa_sbdb.upload_raw_to_s3") as mock_up_raw, \
+         patch("nasa_sbdb.upload_processed_to_s3") as mock_up_proc:
+
+        exit_code = nasa_sbdb.main()
+
+        assert exit_code == 0
+        mock_raw.assert_called_once()
+        assert mock_pq.call_count == 4
+        mock_up_raw.assert_called_once()
+        assert mock_up_proc.call_count == 4
+
+        # Verify lineage metadata attached to uploads
+        raw_meta = mock_up_raw.call_args[1]["metadata"]
+        assert raw_meta["source"] == "nasa_jpl_sbdb_api"
+        assert len(raw_meta["run_id"]) == 12
+        assert "ingested_at" in raw_meta
+
+
+def test_idempotent_same_snapshot_key_behavior():
+    """Verify executing twice on same snapshot date targets identical deterministic S3 keys."""
+    test_date = date(2026, 9, 26)
+    with patch("nasa_sbdb.upload_file_to_s3") as mock_upload, \
+         patch("boto3.client"):
+
+        nasa_sbdb.upload_raw_to_s3("raw.json", test_date, "54527277")
+        key_run1 = mock_upload.call_args[1]["s3_key"]
+
+        nasa_sbdb.upload_raw_to_s3("raw.json", test_date, "54527277")
+        key_run2 = mock_upload.call_args[1]["s3_key"]
+
+        assert key_run1 == key_run2
+        assert key_run1 == "raw/sbdb/object/year=2026/month=09/day=26/spkid=54527277/raw.json"
